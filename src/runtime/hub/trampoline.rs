@@ -132,7 +132,8 @@ srx_hub_trampo_template_start:
     call    *%r11
     addq    $8, %rsp
 
-    subq    $64, %rsp
+    // pop_stack 保存区：48 字节数据 + 8 字节对齐 padding，确保 call 前 rsp 为 16 字节对齐
+    subq    $72, %rsp
     movq    %rax,   (%rsp)
     movq    %rdx,  8(%rsp)
     movupd  %xmm0, 16(%rsp)
@@ -145,7 +146,7 @@ srx_hub_trampo_template_start:
     movq     8(%rsp), %rdx
     movupd  16(%rsp), %xmm0
     movupd  32(%rsp), %xmm1
-    addq    $64, %rsp
+    addq    $72, %rsp
     ret
 
 srx_hub_trampo_template_data:
