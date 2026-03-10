@@ -1,5 +1,6 @@
 // hook 任务与模块的匹配逻辑，包括 callee 地址解析和 caller 过滤
 use crate::errno::Errno;
+use crate::log;
 use std::collections::BTreeSet;
 use std::ffi::{CString, c_void};
 
@@ -31,7 +32,16 @@ pub(super) fn resolve_callee_addrs(task: &Task, modules: &[ModuleInfo]) -> Resul
         ) {
             continue;
         }
-        let elf = ops::init_elf_guard(module.base_addr, &module.pathname)?;
+        let elf = match ops::init_elf_guard(module.base_addr, &module.pathname) {
+            Ok(elf) => elf,
+            Err(err) => {
+                log::warn(format_args!(
+                    "callee ELF init failed: module={} base={:#x} err={:?}",
+                    module.pathname, module.base_addr, err
+                ));
+                return Err(err);
+            }
+        };
         if let Some(addr) = ops::find_export_guard(&elf, &task.sym_name)? {
             addrs.insert(addr);
         }

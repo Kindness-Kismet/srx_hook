@@ -1,6 +1,7 @@
 // 单个模块的 hook 任务应用逻辑，完成 ELF 解析、CFI 处理、GOT slot 写入
 use crate::api::HookMode;
 use crate::errno::Errno;
+use crate::log;
 use std::collections::BTreeSet;
 
 use super::super::cfi;
@@ -23,13 +24,31 @@ pub(super) fn apply_task_for_module(
         return Ok(());
     }
 
-    let elf = ops::init_elf_guard(caller.base_addr, &caller.pathname)?;
+    let elf = match ops::init_elf_guard(caller.base_addr, &caller.pathname) {
+        Ok(elf) => elf,
+        Err(err) => {
+            log::warn(format_args!(
+                "caller ELF init failed: module={} base={:#x} sym={} err={:?}",
+                caller.pathname, caller.base_addr, task.sym_name, err
+            ));
+            return Err(err);
+        }
+    };
     let cfi_status = cfi::ensure_module_cfi_hook(caller, &elf);
     if cfi_status != Errno::Ok {
         emit_event(task, caller, cfi_status, 0, events);
         return Err(cfi_status);
     }
-    let got_slots = ops::find_slots_guard(&elf, &task.sym_name, callee.addrs.as_ref())?;
+    let got_slots = match ops::find_slots_guard(&elf, &task.sym_name, callee.addrs.as_ref()) {
+        Ok(slots) => slots,
+        Err(err) => {
+            log::warn(format_args!(
+                "GOT slot lookup failed: module={} sym={} err={:?}",
+                caller.pathname, task.sym_name, err
+            ));
+            return Err(err);
+        }
+    };
 
     if got_slots.is_empty() {
         emit_nosym_event(task, caller, events);

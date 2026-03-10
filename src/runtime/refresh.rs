@@ -231,6 +231,10 @@ fn refresh_internal(
                 Err(err) => {
                     if first_err.is_ok() {
                         first_err = *err;
+                        log::warn(format_args!(
+                            "callee resolve failed: sym={} err={:?}",
+                            task.sym_name, err
+                        ));
                     }
                     continue;
                 }
@@ -246,6 +250,10 @@ fn refresh_internal(
                 && first_err.is_ok()
             {
                 first_err = err;
+                log::warn(format_args!(
+                    "apply task failed: module={} sym={} err={:?}",
+                    module.pathname, task.sym_name, err
+                ));
             }
             events.extend(task_events);
         }
