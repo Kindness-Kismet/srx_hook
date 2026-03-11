@@ -1,11 +1,11 @@
 // hook 操作入口，提供 hook_single/hook_partial/hook_all/unhook 等 API 的实现
 use crate::api::{
-    CallerAllowFilter, HookStub, HookedCallback, ModuleIdentity,
+    CallerAllowFilter, HookStub, HookedCallback, ModuleIdentity, RefreshError,
 };
 use crate::errno::Errno;
 use std::ffi::c_void;
 
-use super::super::refresh::{self, CallbackEvent};
+use super::super::refresh::{self};
 use super::super::state::{AllowFilterEntry, GLOBAL, HookedEntry, Task, TaskType};
 use super::process;
 use super::{add_task, invoke_callbacks};
@@ -170,16 +170,16 @@ pub(super) fn get_module_identity_with_symbol(
     })
 }
 
-pub(super) fn refresh() -> Errno {
+pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
     let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
     let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
     let mut state = GLOBAL.state.lock_or_poison();
     if state.init.status != Errno::Ok {
-        return state.init.status;
+        return (state.init.status, Vec::new());
     }
     process::ensure_process_context(&mut state);
-    let (status, events): (Errno, Vec<CallbackEvent>) = refresh::refresh_all(&mut state);
+    let (status, events, errors) = refresh::refresh_all(&mut state);
     drop(state);
     invoke_callbacks(events);
-    status
+    (status, errors)
 }

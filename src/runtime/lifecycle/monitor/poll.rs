@@ -181,7 +181,7 @@ pub(super) fn monitor_loop() {
         let _dlclose_guard = super::GLOBAL.dlclose_lock.read_or_poison();
         let _refresh_guard = super::GLOBAL.refresh_mutex.lock_or_poison();
         let mut state = super::GLOBAL.state.lock_or_poison();
-        let (status, events) = if periodic_refresh {
+        let (status, events, _errors) = if periodic_refresh {
             match periodic_refresh_kind {
                 PeriodicRefreshKind::NewModulesOnly => super::refresh::refresh_new_modules(&mut state),
                 PeriodicRefreshKind::Full => super::refresh::refresh_all(&mut state),

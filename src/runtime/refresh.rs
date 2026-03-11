@@ -1,5 +1,5 @@
 // hook 刷新核心模块，负责模块扫描、任务匹配、GOT slot 写入与恢复
-use crate::api::HookStub;
+use crate::api::{HookStub, RefreshError};
 use crate::errno::Errno;
 use crate::log;
 use std::collections::BTreeMap;
@@ -31,18 +31,18 @@ pub(super) struct CallbackEvent {
     pub(super) prev_func: usize,
 }
 
-pub(super) fn refresh_all(state: &mut CoreState) -> (Errno, Vec<CallbackEvent>) {
+pub(super) fn refresh_all(state: &mut CoreState) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
     refresh_internal(state, false, None)
 }
 
-pub(super) fn refresh_new_modules(state: &mut CoreState) -> (Errno, Vec<CallbackEvent>) {
+pub(super) fn refresh_new_modules(state: &mut CoreState) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
     refresh_internal(state, true, None)
 }
 
 pub(super) fn apply_new_task(
     state: &mut CoreState,
     task_stub: HookStub,
-) -> (Errno, Vec<CallbackEvent>) {
+) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
     refresh_internal(state, false, Some(task_stub))
 }
 
@@ -161,7 +161,7 @@ fn refresh_internal(
     state: &mut CoreState,
     only_new: bool,
     target_task: Option<HookStub>,
-) -> (Errno, Vec<CallbackEvent>) {
+) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
     hub::collect_retired(false);
     let modules = ops::enumerate_modules();
     cfi::retain_module_cfi_hook_state(&modules);
@@ -181,6 +181,7 @@ fn refresh_internal(
 
     let mut events = Vec::new();
     let mut first_err = Errno::Ok;
+    let mut refresh_errors: Vec<RefreshError> = Vec::new();
 
     let task_list: Vec<HookStub> = match target_task {
         Some(stub) => vec![stub],
@@ -245,15 +246,22 @@ fn refresh_internal(
             }
 
             let mut task_events = Vec::new();
-            if let Err(err) =
-                apply_task_for_module(state, &task, module, callee, &mut task_events)
-                && first_err.is_ok()
-            {
-                first_err = err;
-                log::warn(format_args!(
-                    "apply task failed: module={} sym={} err={:?}",
-                    module.pathname, task.sym_name, err
-                ));
+            let task_result =
+                apply_task_for_module(state, &task, module, callee, &mut task_events);
+            if let Err(err) = task_result {
+                if first_err.is_ok() {
+                    first_err = err;
+                    log::warn(format_args!(
+                        "apply task failed: module={} sym={} err={:?}",
+                        module.pathname, task.sym_name, err
+                    ));
+                }
+                if !refresh_errors.iter().any(|e| e.module_path == module.pathname) {
+                    refresh_errors.push(RefreshError {
+                        module_path: module.pathname.clone(),
+                        errno: err,
+                    });
+                }
             }
             events.extend(task_events);
         }
@@ -268,5 +276,5 @@ fn refresh_internal(
         events.len(),
         modules_changed
     ));
-    (first_err, events)
+    (first_err, events, refresh_errors)
 }

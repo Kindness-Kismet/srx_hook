@@ -101,7 +101,7 @@ pub(crate) fn get_module_identity_with_symbol(
     lifecycle::get_module_identity_with_symbol(handle, probe_symbol)
 }
 
-pub(crate) fn refresh() -> Errno {
+pub(crate) fn refresh() -> (Errno, Vec<crate::api::RefreshError>) {
     lifecycle::refresh()
 }
 

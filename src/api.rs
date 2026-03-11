@@ -5,6 +5,13 @@ use std::ffi::{c_char, c_void};
 // hook 任务的唯一标识，由运行时分配
 pub type HookStub = u64;
 
+// refresh 中单个模块的错误详情，用于诊断 ELF 解析失败等问题
+#[derive(Debug)]
+pub struct RefreshError {
+    pub module_path: String,
+    pub errno: Errno,
+}
+
 // hook 生效后的回调，通知调用方 hook 状态与实际替换地址
 pub type HookedCallback = unsafe extern "C" fn(
     task_stub: HookStub,
@@ -198,9 +205,9 @@ pub fn get_module_identity_with_symbol(
 }
 
 // 手动模式下触发一次全量刷新，将待生效的 hook 应用到已加载模块
-pub fn refresh() -> Errno {
+pub fn refresh() -> (Errno, Vec<RefreshError>) {
     if in_external_callback() {
-        return Errno::InitErrSafe;
+        return (Errno::InitErrSafe, Vec::new());
     }
     runtime::refresh()
 }

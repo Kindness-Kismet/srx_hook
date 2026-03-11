@@ -48,7 +48,8 @@ pub(super) fn add_task(mut task: Task) -> Option<HookStub> {
     let (status, events) = if is_manual {
         (Errno::Ok, Vec::new())
     } else {
-        refresh::apply_new_task(&mut state, stub)
+        let (status, events, _errors) = refresh::apply_new_task(&mut state, stub);
+        (status, events)
     };
     let status_code = if record_use_real_status {
         status.as_i32()

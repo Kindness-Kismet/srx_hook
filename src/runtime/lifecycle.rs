@@ -2,7 +2,7 @@
 // 将 hook/unhook/refresh/控制/回调等操作分发到各子模块
 use crate::api::{
     CallerAllowFilter, HookMode, HookStub, HookedCallback, ModuleIdentity, PostDlopenCallback,
-    PreDlopenCallback,
+    PreDlopenCallback, RefreshError,
 };
 use crate::errno::Errno;
 use std::ffi::{c_char, c_void};
@@ -93,7 +93,7 @@ pub(super) fn get_module_identity_with_symbol(
     entry_hook::get_module_identity_with_symbol(handle, probe_symbol)
 }
 
-pub(super) fn refresh() -> Errno {
+pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
     entry_hook::refresh()
 }
 
