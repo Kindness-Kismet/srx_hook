@@ -32,7 +32,7 @@ pub unsafe fn scenario_cycle_guard_auto() {
         std::ptr::null_mut(),
     )
     .expect("hook_single strlen cycle failed");
-    ensure_ok(refresh(), "refresh cycle guard");
+    ensure_ok(refresh().0, "refresh cycle guard");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     HOOK_B_COUNT.store(0, Ordering::Relaxed);
@@ -76,7 +76,7 @@ pub unsafe fn scenario_cycle_guard_manual_no_leave() {
         std::ptr::null_mut(),
     )
     .expect("hook_single strlen cycle manual failed");
-    ensure_ok(refresh(), "refresh cycle manual");
+    ensure_ok(refresh().0, "refresh cycle manual");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     HOOK_B_COUNT.store(0, Ordering::Relaxed);

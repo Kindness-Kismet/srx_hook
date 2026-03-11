@@ -30,7 +30,7 @@ pub unsafe fn scenario_single_hook_unhook() {
         std::ptr::null_mut(),
     )
     .expect("hook_single A failed");
-    ensure_ok(refresh(), "refresh single");
+    ensure_ok(refresh().0, "refresh single");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -79,7 +79,7 @@ pub unsafe fn scenario_multi_hook_chain_unhook() {
         std::ptr::null_mut(),
     )
     .expect("hook_single C failed");
-    ensure_ok(refresh(), "refresh chain");
+    ensure_ok(refresh().0, "refresh chain");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     HOOK_B_COUNT.store(0, Ordering::Relaxed);
@@ -166,7 +166,7 @@ pub unsafe fn scenario_same_proxy_multi_stub_unhook() {
         std::ptr::null_mut(),
     )
     .expect("hook_single same proxy B failed");
-    ensure_ok(refresh(), "refresh same proxy");
+    ensure_ok(refresh().0, "refresh same proxy");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -208,7 +208,7 @@ pub unsafe fn scenario_missing_leave_recovery() {
         std::ptr::null_mut(),
     )
     .expect("hook_single missing leave failed");
-    ensure_ok(refresh(), "refresh missing leave");
+    ensure_ok(refresh().0, "refresh missing leave");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     for _ in 0..8 {
@@ -240,7 +240,7 @@ pub unsafe fn scenario_ignore() {
         std::ptr::null_mut(),
     )
     .expect("hook_single ignore case failed");
-    ensure_ok(refresh(), "refresh ignore");
+    ensure_ok(refresh().0, "refresh ignore");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);

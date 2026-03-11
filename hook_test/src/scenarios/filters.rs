@@ -26,7 +26,7 @@ pub unsafe fn scenario_callee_filter() {
         std::ptr::null_mut(),
     )
     .expect("hook_single wrong callee failed");
-    ensure_ok(refresh(), "refresh callee wrong");
+    ensure_ok(refresh().0, "refresh callee wrong");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -46,7 +46,7 @@ pub unsafe fn scenario_callee_filter() {
         std::ptr::null_mut(),
     )
     .expect("hook_single right callee failed");
-    ensure_ok(refresh(), "refresh callee right");
+    ensure_ok(refresh().0, "refresh callee right");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -74,7 +74,7 @@ pub unsafe fn scenario_callee_filter_lazy_bind() {
         std::ptr::null_mut(),
     )
     .expect("hook_single lazy callee failed");
-    ensure_ok(refresh(), "refresh callee lazy");
+    ensure_ok(refresh().0, "refresh callee lazy");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -107,7 +107,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_single wrong caller base failed");
-    ensure_ok(refresh(), "refresh wrong caller base");
+    ensure_ok(refresh().0, "refresh wrong caller base");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -128,7 +128,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_single right caller base failed");
-    ensure_ok(refresh(), "refresh right caller base");
+    ensure_ok(refresh().0, "refresh right caller base");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -148,7 +148,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_single wrong callee base failed");
-    ensure_ok(refresh(), "refresh wrong callee base");
+    ensure_ok(refresh().0, "refresh wrong callee base");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -169,7 +169,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_single right callee base failed");
-    ensure_ok(refresh(), "refresh right callee base");
+    ensure_ok(refresh().0, "refresh right callee base");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -204,7 +204,7 @@ pub unsafe fn scenario_single_same_basename_multi_instance() {
         std::ptr::null_mut(),
     )
     .expect("hook_single same basename failed");
-    ensure_ok(refresh(), "refresh single same basename");
+    ensure_ok(refresh().0, "refresh single same basename");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);
@@ -220,7 +220,7 @@ pub unsafe fn scenario_single_same_basename_multi_instance() {
 
     if hit_a {
         libc::dlclose(handle_a);
-        ensure_ok(refresh(), "refresh single same basename rebind");
+        ensure_ok(refresh().0, "refresh single same basename rebind");
         HOOK_A_COUNT.store(0, Ordering::Relaxed);
         hook_test_trigger(handle_b);
         assert!(
@@ -231,7 +231,7 @@ pub unsafe fn scenario_single_same_basename_multi_instance() {
         libc::dlclose(handle_b);
     } else {
         libc::dlclose(handle_b);
-        ensure_ok(refresh(), "refresh single same basename rebind");
+        ensure_ok(refresh().0, "refresh single same basename rebind");
         HOOK_A_COUNT.store(0, Ordering::Relaxed);
         hook_test_trigger(handle_a);
         assert!(
@@ -273,7 +273,7 @@ pub unsafe fn scenario_instance_qualified_path_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_single wrong instance rule failed");
-    ensure_ok(refresh(), "refresh wrong instance rule");
+    ensure_ok(refresh().0, "refresh wrong instance rule");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);
@@ -295,7 +295,7 @@ pub unsafe fn scenario_instance_qualified_path_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_single right instance rule failed");
-    ensure_ok(refresh(), "refresh right instance rule");
+    ensure_ok(refresh().0, "refresh right instance rule");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);
@@ -339,7 +339,7 @@ pub unsafe fn scenario_ignore_instance_qualified_rule() {
         std::ptr::null_mut(),
     )
     .expect("hook_all ignore instance-qualified rule failed");
-    ensure_ok(refresh(), "refresh ignore instance-qualified rule");
+    ensure_ok(refresh().0, "refresh ignore instance-qualified rule");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);
@@ -390,7 +390,7 @@ pub unsafe fn scenario_instance_rule_from_handle_api() {
         std::ptr::null_mut(),
     )
     .expect("hook_single instance rule from handle api failed");
-    ensure_ok(refresh(), "refresh instance rule from handle api");
+    ensure_ok(refresh().0, "refresh instance rule from handle api");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);
@@ -436,7 +436,7 @@ pub unsafe fn scenario_identity_with_symbol_api() {
         std::ptr::null_mut(),
     )
     .expect("hook_single identity with symbol api failed");
-    ensure_ok(refresh(), "refresh identity with symbol api");
+    ensure_ok(refresh().0, "refresh identity with symbol api");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
@@ -506,7 +506,7 @@ pub unsafe fn scenario_namespace_rule_from_handle_api() {
         std::ptr::null_mut(),
     )
     .expect("hook_single wrong namespace rule failed");
-    ensure_ok(refresh(), "refresh wrong namespace rule");
+    ensure_ok(refresh().0, "refresh wrong namespace rule");
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);
     hook_test_trigger(handle_b);
@@ -534,7 +534,7 @@ pub unsafe fn scenario_namespace_rule_from_handle_api() {
         std::ptr::null_mut(),
     )
     .expect("hook_single right namespace rule failed");
-    ensure_ok(refresh(), "refresh right namespace rule");
+    ensure_ok(refresh().0, "refresh right namespace rule");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle_a);

@@ -44,7 +44,7 @@ pub unsafe fn scenario_concurrent_hooking_stress() {
             std::ptr::null_mut(),
         )
         .expect("hook_single concurrent failed");
-        ensure_ok(refresh(), "refresh concurrent");
+        ensure_ok(refresh().0, "refresh concurrent");
         std::thread::sleep(Duration::from_millis(2));
         ensure_ok(unhook(stub), "unhook concurrent");
     }
@@ -71,7 +71,7 @@ pub unsafe fn scenario_persistent_hook_parallel_stress() {
         std::ptr::null_mut(),
     )
     .expect("hook_single persistent stress failed");
-    ensure_ok(refresh(), "refresh persistent stress");
+    ensure_ok(refresh().0, "refresh persistent stress");
 
     let worker_count = env_usize("HOOK_TEST_PERSISTENT_WORKERS", 56);
     let worker_calls = env_usize("HOOK_TEST_PERSISTENT_CALLS", 320);
@@ -121,7 +121,7 @@ pub unsafe fn scenario_perf_smoke() {
         std::ptr::null_mut(),
     )
     .expect("hook_single perf failed");
-    ensure_ok(refresh(), "refresh perf");
+    ensure_ok(refresh().0, "refresh perf");
 
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     let start = Instant::now();
@@ -155,7 +155,7 @@ pub unsafe fn scenario_leak_smoke() {
             std::ptr::null_mut(),
         )
         .expect("hook_single leak failed");
-        ensure_ok(refresh(), "refresh leak");
+        ensure_ok(refresh().0, "refresh leak");
         hook_test_trigger(handle);
         ensure_ok(unhook(stub), "unhook leak");
     }
@@ -193,7 +193,7 @@ pub unsafe fn scenario_manual_churn_marathon() {
             std::ptr::null_mut(),
         )
         .expect("hook_single manual churn marathon failed");
-        ensure_ok(refresh(), "refresh manual churn marathon");
+        ensure_ok(refresh().0, "refresh manual churn marathon");
         hook_test_trigger(handle);
         ensure_ok(unhook(stub), "unhook manual churn marathon");
 

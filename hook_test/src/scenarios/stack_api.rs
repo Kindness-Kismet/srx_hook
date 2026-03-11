@@ -21,7 +21,7 @@ pub unsafe fn scenario_return_address_stack_api() {
         std::ptr::null_mut(),
     )
     .expect("hook_single stack api failed");
-    ensure_ok(refresh(), "refresh stack api");
+    ensure_ok(refresh().0, "refresh stack api");
 
     STACK_API_COUNT.store(0, Ordering::Relaxed);
     for _ in 0..16 {
