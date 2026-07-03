@@ -49,10 +49,7 @@ fn current_stack_pointer() -> usize {
 // 清理已返回的栈帧，栈向低地址增长，sp <= current_sp 的帧已失效
 #[inline]
 fn prune_stale_proxy_frames(stack: &mut ProxyStack, current_sp: usize) {
-    loop {
-        let Some(frame) = stack.last() else {
-            break;
-        };
+    while let Some(frame) = stack.last() {
         if frame.stack_sp > current_sp {
             break;
         }

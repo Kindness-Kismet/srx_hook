@@ -51,15 +51,21 @@ pub(super) fn module_match(
 }
 
 // 判断模块是否应跳过 hook
-// 空路径、vDSO（以 '[' 开头）和自身 so 始终跳过
+// 空路径、vDSO（以 '[' 开头）和自身模块始终跳过
+// self_base_addr 为宿主 so 加载基址，按基址跳过自身，与路径无关（覆盖 memfd）
 pub(super) fn should_ignore(
     pathname: &str,
     base_addr: usize,
     instance_id: usize,
     namespace_id: usize,
+    self_base_addr: usize,
     ignores: &[String],
 ) -> bool {
     if pathname.is_empty() || pathname.starts_with('[') {
+        return true;
+    }
+    // 按基址跳过自身，避免 hook 框架被 hook 导致段错误
+    if self_base_addr != 0 && base_addr == self_base_addr {
         return true;
     }
     // 跳过自身，避免 hook 框架被 hook 导致无限递归
@@ -214,14 +220,43 @@ mod tests {
     #[test]
     fn should_ignore_uses_instance_rule() {
         let ignores = vec!["libfoo.so%0x1234".to_string()];
-        assert!(should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x10, &ignores));
-        assert!(!should_ignore("/data/app/libfoo.so", 0x1, 0x5678, 0x20, &ignores));
+        assert!(should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x10, 0, &ignores));
+        assert!(!should_ignore("/data/app/libfoo.so", 0x1, 0x5678, 0x20, 0, &ignores));
     }
 
     #[test]
     fn should_ignore_uses_namespace_rule() {
         let ignores = vec!["libfoo.so%0x1234^0x8888".to_string()];
-        assert!(should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x8888, &ignores));
-        assert!(!should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x9999, &ignores));
+        assert!(should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x8888, 0, &ignores));
+        assert!(!should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x9999, 0, &ignores));
+    }
+
+    // memfd 加载下路径不含 so 名，仅靠基址跳过自身
+    #[test]
+    fn should_ignore_self_by_base_addr() {
+        let ignores: Vec<String> = Vec::new();
+        assert!(should_ignore(
+            "/memfd:zygisk-module (deleted)",
+            0xABCD,
+            0x1,
+            0x0,
+            0xABCD,
+            &ignores
+        ));
+        assert!(!should_ignore(
+            "/memfd:zygisk-module (deleted)",
+            0xABCD,
+            0x1,
+            0x0,
+            0x1234,
+            &ignores
+        ));
+    }
+
+    // self_base_addr 为 0（未解析）时不误伤任意模块
+    #[test]
+    fn should_not_ignore_when_self_base_unknown() {
+        let ignores: Vec<String> = Vec::new();
+        assert!(!should_ignore("/data/app/libfoo.so", 0x0, 0x1, 0x0, 0, &ignores));
     }
 }

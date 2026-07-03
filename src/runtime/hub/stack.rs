@@ -41,10 +41,7 @@ fn current_stack_pointer() -> usize {
 #[inline]
 fn prune_stale_frames(stack: &mut HubStack, current_sp: usize) {
     let mut popped = 0usize;
-    loop {
-        let Some(frame) = stack.last() else {
-            break;
-        };
+    while let Some(frame) = stack.last() {
         if frame.stack_sp > current_sp {
             break;
         }

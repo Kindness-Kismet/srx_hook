@@ -15,6 +15,17 @@ pub(super) fn get_version() -> String {
     version::version_str_full()
 }
 
+// 反查自身模块加载基址，用于按基址忽略自身
+// 与路径无关，覆盖 memfd 匿名加载（如 neozygisk）场景
+fn resolve_self_base_addr() -> usize {
+    let probe = resolve_self_base_addr as *const std::ffi::c_void;
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    if unsafe { libc::dladdr(probe, &mut info) } == 0 {
+        return 0;
+    }
+    info.dli_fbase as usize
+}
+
 pub(super) fn init(mode: HookMode, debug: bool) -> Errno {
     let mut should_start_monitor = false;
     let status = {
@@ -26,6 +37,7 @@ pub(super) fn init(mode: HookMode, debug: bool) -> Errno {
         state.debug = debug;
         log::set_debug_enabled(debug);
         state.init.mode = mode;
+        state.self_base_addr = resolve_self_base_addr();
         let pid = unsafe { libc::getpid() };
         state.process_id = pid as usize;
         set_install_pid(pid);

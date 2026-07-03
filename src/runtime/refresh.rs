@@ -208,6 +208,7 @@ fn refresh_internal(
             module.base_addr,
             module.instance_id,
             module.namespace_id,
+            state.self_base_addr,
             &state.ignore_callers,
         ) {
             continue;

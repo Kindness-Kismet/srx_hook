@@ -166,6 +166,8 @@ impl Default for InitInfo {
 #[derive(Default)]
 pub(super) struct CoreState {
     pub(super) process_id: usize,
+    // 自身模块加载基址，用于 memfd 匿名加载时按基址跳过 hook 自身
+    pub(super) self_base_addr: usize,
     pub(super) init: InitInfo,
     pub(super) debug: bool,
     pub(super) next_stub: HookStub,
