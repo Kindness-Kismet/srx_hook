@@ -3,11 +3,11 @@
 
 use std::sync::atomic::Ordering;
 
+use super::abi;
 use super::{
     GUARD_BASE_SLOTS, GUARD_EXTRA_HEAD, GUARD_STACK_DEPTH_MAX, GuardNode, GuardSlot,
     SigchainCallbackFn, siglongjmp,
 };
-use super::abi;
 
 // 在静态数组和动态链表中按 tid 查找已归属的 slot
 fn find_slot_by_tid(tid: usize) -> Option<&'static GuardSlot> {

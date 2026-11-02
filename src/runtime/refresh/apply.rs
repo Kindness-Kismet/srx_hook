@@ -7,9 +7,9 @@ use std::collections::BTreeSet;
 use super::super::cfi;
 use super::super::hub;
 use super::super::state::{CoreState, ModuleInfo, SlotEntry, SlotKey, Task, TaskType};
+use super::CallbackEvent;
 use super::module_registry::module_key;
 use super::ops;
-use super::CallbackEvent;
 
 // 对指定 caller 模块应用 task：解析 ELF -> 确保 CFI hook -> 查找 GOT slot -> 创建 hub -> 写入
 pub(super) fn apply_task_for_module(

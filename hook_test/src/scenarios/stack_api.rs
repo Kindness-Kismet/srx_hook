@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use srx_hook::{HookMode, clear, hook_single, init, pop_stack, refresh, unhook};
 
 use crate::test_ctx::{
-    STACK_API_COUNT, ensure_ok, hook_puts_return_address_stack, load_hook_test, hook_test_trigger,
+    STACK_API_COUNT, ensure_ok, hook_puts_return_address_stack, hook_test_trigger, load_hook_test,
 };
 
 pub unsafe fn scenario_return_address_stack_api() {

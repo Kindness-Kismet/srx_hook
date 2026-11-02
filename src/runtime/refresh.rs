@@ -35,7 +35,9 @@ pub(super) fn refresh_all(state: &mut CoreState) -> (Errno, Vec<CallbackEvent>, 
     refresh_internal(state, false, None)
 }
 
-pub(super) fn refresh_new_modules(state: &mut CoreState) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
+pub(super) fn refresh_new_modules(
+    state: &mut CoreState,
+) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
     refresh_internal(state, true, None)
 }
 
@@ -247,8 +249,7 @@ fn refresh_internal(
             }
 
             let mut task_events = Vec::new();
-            let task_result =
-                apply_task_for_module(state, &task, module, callee, &mut task_events);
+            let task_result = apply_task_for_module(state, &task, module, callee, &mut task_events);
             if let Err(err) = task_result {
                 if first_err.is_ok() {
                     first_err = err;
@@ -257,7 +258,10 @@ fn refresh_internal(
                         module.pathname, task.sym_name, err
                     ));
                 }
-                if !refresh_errors.iter().any(|e| e.module_path == module.pathname) {
+                if !refresh_errors
+                    .iter()
+                    .any(|e| e.module_path == module.pathname)
+                {
                     refresh_errors.push(RefreshError {
                         module_path: module.pathname.clone(),
                         errno: err,

@@ -1,8 +1,8 @@
 // GOT slot 读写、ELF 解析和模块扫描的底层操作，所有操作均在信号保护下执行
-use crate::elf;
-use crate::errno::Errno;
 use crate::android::memory;
 use crate::android::signal_guard;
+use crate::elf;
+use crate::errno::Errno;
 use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::ptr;
@@ -96,9 +96,11 @@ pub(super) fn module_identity_from_handle_with_symbol(
     handle: *mut c_void,
     probe_symbol: &str,
 ) -> Option<ModuleInfo> {
-    signal_guard::with_guard(|| module_scan::module_identity_from_handle_with_symbol(handle, probe_symbol))
-        .ok()
-        .flatten()
+    signal_guard::with_guard(|| {
+        module_scan::module_identity_from_handle_with_symbol(handle, probe_symbol)
+    })
+    .ok()
+    .flatten()
 }
 
 pub(super) fn enumerate_modules() -> Vec<ModuleInfo> {

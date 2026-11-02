@@ -86,11 +86,7 @@ fn resolve_signal_abi_fns() -> SignalAbiFns {
     let mut sigaction_ptr: *mut c_void = ptr::null_mut();
     let mut sigprocmask_ptr: *mut c_void = ptr::null_mut();
 
-    fill_signal_abi_from_handle(
-        libc::RTLD_DEFAULT,
-        &mut sigaction_ptr,
-        &mut sigprocmask_ptr,
-    );
+    fill_signal_abi_from_handle(libc::RTLD_DEFAULT, &mut sigaction_ptr, &mut sigprocmask_ptr);
 
     for lib_path in LIBC_PATH_CANDIDATES {
         if !sigaction_ptr.is_null() && !sigprocmask_ptr.is_null() {
@@ -108,21 +104,21 @@ fn resolve_signal_abi_fns() -> SignalAbiFns {
         if !sigaction_ptr.is_null() && !sigprocmask_ptr.is_null() {
             break;
         }
-        fill_signal_abi_from_library(lib_path, libc::RTLD_NOW, &mut sigaction_ptr, &mut sigprocmask_ptr);
-    }
-
-    if sigaction_ptr.is_null() || sigprocmask_ptr.is_null() {
-        fill_signal_abi_from_handle(
-            RTLD_NEXT_FALLBACK,
+        fill_signal_abi_from_library(
+            lib_path,
+            libc::RTLD_NOW,
             &mut sigaction_ptr,
             &mut sigprocmask_ptr,
         );
     }
 
+    if sigaction_ptr.is_null() || sigprocmask_ptr.is_null() {
+        fill_signal_abi_from_handle(RTLD_NEXT_FALLBACK, &mut sigaction_ptr, &mut sigprocmask_ptr);
+    }
+
     log::debug(format_args!(
         "signal abi resolved sigaction=0x{:x} sigprocmask=0x{:x}",
-        sigaction_ptr as usize,
-        sigprocmask_ptr as usize
+        sigaction_ptr as usize, sigprocmask_ptr as usize
     ));
 
     SignalAbiFns {

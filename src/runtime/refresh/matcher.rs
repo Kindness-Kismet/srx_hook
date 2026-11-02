@@ -4,11 +4,11 @@ use crate::log;
 use std::collections::BTreeSet;
 use std::ffi::{CString, c_void};
 
-use super::module_registry::module_key;
-use super::ops;
 use super::super::callback_ctx;
 use super::super::rules::module_match;
 use super::super::state::{CoreState, ModuleInfo, Task, TaskType};
+use super::module_registry::module_key;
+use super::ops;
 
 // callee 符号地址解析结果，None 表示不限定 callee
 pub(super) struct CalleeResolve {
@@ -16,7 +16,10 @@ pub(super) struct CalleeResolve {
 }
 
 // 遍历所有模块查找 callee 导出符号地址，用于 GOT slot 精确匹配
-pub(super) fn resolve_callee_addrs(task: &Task, modules: &[ModuleInfo]) -> Result<CalleeResolve, Errno> {
+pub(super) fn resolve_callee_addrs(
+    task: &Task,
+    modules: &[ModuleInfo],
+) -> Result<CalleeResolve, Errno> {
     let Some(callee_path_name) = task.callee_path_name.as_deref() else {
         return Ok(CalleeResolve { addrs: None });
     };

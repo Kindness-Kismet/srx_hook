@@ -164,10 +164,7 @@ mod tests {
 
     #[test]
     fn path_match_ignores_instance_suffix() {
-        assert!(path_match(
-            "/data/app/libfoo.so",
-            "libfoo.so%0x1234abcd",
-        ));
+        assert!(path_match("/data/app/libfoo.so", "libfoo.so%0x1234abcd",));
     }
 
     #[test]
@@ -220,15 +217,43 @@ mod tests {
     #[test]
     fn should_ignore_uses_instance_rule() {
         let ignores = vec!["libfoo.so%0x1234".to_string()];
-        assert!(should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x10, 0, &ignores));
-        assert!(!should_ignore("/data/app/libfoo.so", 0x1, 0x5678, 0x20, 0, &ignores));
+        assert!(should_ignore(
+            "/data/app/libfoo.so",
+            0x1,
+            0x1234,
+            0x10,
+            0,
+            &ignores
+        ));
+        assert!(!should_ignore(
+            "/data/app/libfoo.so",
+            0x1,
+            0x5678,
+            0x20,
+            0,
+            &ignores
+        ));
     }
 
     #[test]
     fn should_ignore_uses_namespace_rule() {
         let ignores = vec!["libfoo.so%0x1234^0x8888".to_string()];
-        assert!(should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x8888, 0, &ignores));
-        assert!(!should_ignore("/data/app/libfoo.so", 0x1, 0x1234, 0x9999, 0, &ignores));
+        assert!(should_ignore(
+            "/data/app/libfoo.so",
+            0x1,
+            0x1234,
+            0x8888,
+            0,
+            &ignores
+        ));
+        assert!(!should_ignore(
+            "/data/app/libfoo.so",
+            0x1,
+            0x1234,
+            0x9999,
+            0,
+            &ignores
+        ));
     }
 
     // memfd 加载下路径不含 so 名，仅靠基址跳过自身
@@ -257,6 +282,13 @@ mod tests {
     #[test]
     fn should_not_ignore_when_self_base_unknown() {
         let ignores: Vec<String> = Vec::new();
-        assert!(!should_ignore("/data/app/libfoo.so", 0x0, 0x1, 0x0, 0, &ignores));
+        assert!(!should_ignore(
+            "/data/app/libfoo.so",
+            0x0,
+            0x1,
+            0x0,
+            0,
+            &ignores
+        ));
     }
 }

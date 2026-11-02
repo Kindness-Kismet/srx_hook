@@ -2,11 +2,10 @@
 use crate::runtime::state::MutexPoisonRecover;
 use std::ffi::CString;
 
-use super::hints::{
-    module_noload_key, noload_namespace_hints, trim_noload_namespace_hints,
-};
+use super::hints::{module_noload_key, noload_namespace_hints, trim_noload_namespace_hints};
 use super::resolve::{
-    resolve_link_map_from_handle, resolve_namespace_id_from_handle, resolve_namespace_id_from_link_map,
+    resolve_link_map_from_handle, resolve_namespace_id_from_handle,
+    resolve_namespace_id_from_link_map,
 };
 use super::{DlinfoFn, ModuleInfo};
 
@@ -16,7 +15,8 @@ fn resolve_namespace_id_from_noload(module: &ModuleInfo, dlinfo: DlinfoFn) -> Op
         return None;
     }
     for candidate in noload_path_candidates(module.pathname.as_str()) {
-        let handle = unsafe { libc::dlopen(candidate.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
+        let handle =
+            unsafe { libc::dlopen(candidate.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) };
         if handle.is_null() {
             continue;
         }

@@ -26,7 +26,8 @@ fn parse_maps_skip_nonzero_offset() {
 
 #[test]
 fn parse_maps_linker_ok() {
-    let line = "7f64000000-7f64030000 r-xp 00000000 103:06 67890 /apex/com.android.runtime/bin/linker64";
+    let line =
+        "7f64000000-7f64030000 r-xp 00000000 103:06 67890 /apex/com.android.runtime/bin/linker64";
     let module = parse_maps_line(line).expect("linker should parse");
     assert_eq!(module.pathname, "/apex/com.android.runtime/bin/linker64");
     assert_ne!(module.instance_id, 0);
@@ -234,7 +235,8 @@ fn merge_identity_keeps_primary_for_mismatched_module() {
         namespace_id: 0x40,
     };
 
-    let merged = merge_module_identity(Some(primary.clone()), Some(fallback)).expect("merged identity");
+    let merged =
+        merge_module_identity(Some(primary.clone()), Some(fallback)).expect("merged identity");
     assert_eq!(merged.pathname, primary.pathname);
     assert_eq!(merged.base_addr, primary.base_addr);
     assert_eq!(merged.instance_id, primary.instance_id);

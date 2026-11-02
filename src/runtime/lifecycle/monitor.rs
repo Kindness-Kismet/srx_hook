@@ -2,9 +2,9 @@
 // 支持 loader hook (API >= 26) 和 legacy hook 两种策略，可自动降级
 use crate::errno::Errno;
 use crate::log;
+use std::env;
 use std::ffi::c_void;
 use std::ffi::{CStr, c_char};
-use std::env;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -214,12 +214,18 @@ fn install_legacy_hooks_for_all_modules() {
 // loader 模式：仅 hook libdl.so 中的 __loader_dlopen 等符号 (API >= 26)
 fn install_loader_hooks_for_libdl() {
     let loader_hooks = [
-        ("__loader_dlopen", proxies::monitor_loader_dlopen as *mut c_void),
+        (
+            "__loader_dlopen",
+            proxies::monitor_loader_dlopen as *mut c_void,
+        ),
         (
             "__loader_android_dlopen_ext",
             proxies::monitor_loader_android_dlopen_ext as *mut c_void,
         ),
-        ("__loader_dlclose", proxies::monitor_loader_dlclose as *mut c_void),
+        (
+            "__loader_dlclose",
+            proxies::monitor_loader_dlclose as *mut c_void,
+        ),
     ];
 
     for &(symbol, proxy) in &loader_hooks {

@@ -165,11 +165,13 @@ pub(super) unsafe fn call_real_dlopen_with_caller(
     extinfo: *const c_void,
     caller_addr: *const c_void,
 ) -> *mut c_void {
-    let linker_dlopen_ext = *REAL_LINKER_DLOPEN_EXT
-        .get_or_init(|| unsafe { resolve_symbol(c"__dl__ZL10dlopen_extPKciPK17android_dlextinfoPv") });
+    let linker_dlopen_ext = *REAL_LINKER_DLOPEN_EXT.get_or_init(|| unsafe {
+        resolve_symbol(c"__dl__ZL10dlopen_extPKciPK17android_dlextinfoPv")
+    });
     if linker_dlopen_ext != 0 {
-        let handle =
-            unsafe { call_linker_dlopen_ext_fn(linker_dlopen_ext, filename, flags, extinfo, caller_addr) };
+        let handle = unsafe {
+            call_linker_dlopen_ext_fn(linker_dlopen_ext, filename, flags, extinfo, caller_addr)
+        };
         if !handle.is_null() {
             return handle;
         }
@@ -188,7 +190,8 @@ pub(super) unsafe fn call_real_dlopen_with_caller(
             call_linker_dlopen_ext_fn(linker_do_dlopen, filename, flags, extinfo, caller_addr)
         };
         if linker_mutex != 0 {
-            let _ = unsafe { libc::pthread_mutex_unlock(linker_mutex as *mut libc::pthread_mutex_t) };
+            let _ =
+                unsafe { libc::pthread_mutex_unlock(linker_mutex as *mut libc::pthread_mutex_t) };
         }
         if !handle.is_null() {
             return handle;

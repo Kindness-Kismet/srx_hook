@@ -92,8 +92,7 @@ where
         signal_guard.restore();
         log::warn(format_args!(
             "guard stack overflow depth={} max={}",
-            depth,
-            GUARD_STACK_DEPTH_MAX
+            depth, GUARD_STACK_DEPTH_MAX
         ));
         return Err(Errno::SegvErr);
     }

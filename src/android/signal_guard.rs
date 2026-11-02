@@ -46,11 +46,8 @@ static SIGSEGV_OLD_ACTION: AtomicPtr<libc::sigaction> = AtomicPtr::new(ptr::null
 static SIGBUS_OLD_ACTION: AtomicPtr<libc::sigaction> = AtomicPtr::new(ptr::null_mut());
 
 // 动态解析的 libc 信号函数指针类型
-type SigActionFn = unsafe extern "C" fn(
-    libc::c_int,
-    *const libc::sigaction,
-    *mut libc::sigaction,
-) -> libc::c_int;
+type SigActionFn =
+    unsafe extern "C" fn(libc::c_int, *const libc::sigaction, *mut libc::sigaction) -> libc::c_int;
 type SigProcMaskFn =
     unsafe extern "C" fn(libc::c_int, *const libc::sigset_t, *mut libc::sigset_t) -> libc::c_int;
 

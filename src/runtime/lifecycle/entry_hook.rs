@@ -1,7 +1,5 @@
 // hook 操作入口，提供 hook_single/hook_partial/hook_all/unhook 等 API 的实现
-use crate::api::{
-    CallerAllowFilter, HookStub, HookedCallback, ModuleIdentity, RefreshError,
-};
+use crate::api::{CallerAllowFilter, HookStub, HookedCallback, ModuleIdentity, RefreshError};
 use crate::errno::Errno;
 use std::ffi::c_void;
 

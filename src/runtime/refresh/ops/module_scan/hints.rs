@@ -9,8 +9,7 @@ use super::{
 };
 
 pub(super) fn observed_identity_hints() -> &'static Mutex<BTreeMap<usize, ObservedIdentityHint>> {
-    static OBSERVED_HINTS: OnceLock<Mutex<BTreeMap<usize, ObservedIdentityHint>>> =
-        OnceLock::new();
+    static OBSERVED_HINTS: OnceLock<Mutex<BTreeMap<usize, ObservedIdentityHint>>> = OnceLock::new();
     OBSERVED_HINTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -68,7 +67,10 @@ pub(super) fn observe_path_namespace_hint(pathname: &str, namespace_id: usize) {
     if normalized.is_empty() {
         return;
     }
-    let basename = normalized.rsplit('/').next().filter(|name| *name != normalized);
+    let basename = normalized
+        .rsplit('/')
+        .next()
+        .filter(|name| *name != normalized);
     let mut hints = observed_path_namespace_hints().lock_or_poison();
     upsert_path_namespace_hint(&mut hints, normalized, namespace_id);
     if let Some(name) = basename {
@@ -219,8 +221,10 @@ pub(super) fn apply_instance_hints(
 ) {
     let alive_bases: BTreeSet<usize> = modules.iter().map(|(module, _)| module.base_addr).collect();
     hints.retain(|base, _| alive_bases.contains(base));
-    let alive_noload_keys: BTreeSet<(usize, usize)> =
-        modules.iter().map(|(module, _)| module_noload_key(module)).collect();
+    let alive_noload_keys: BTreeSet<(usize, usize)> = modules
+        .iter()
+        .map(|(module, _)| module_noload_key(module))
+        .collect();
     noload_namespace_hints()
         .lock()
         .unwrap()
@@ -229,7 +233,10 @@ pub(super) fn apply_instance_hints(
         .iter()
         .flat_map(|(module, _)| {
             let normalized = normalize_pathname(module.pathname.as_str());
-            let basename = normalized.rsplit('/').next().filter(|name| *name != normalized);
+            let basename = normalized
+                .rsplit('/')
+                .next()
+                .filter(|name| *name != normalized);
             [Some(normalized.to_string()), basename.map(str::to_string)]
         })
         .flatten()

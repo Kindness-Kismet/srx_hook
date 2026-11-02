@@ -164,8 +164,7 @@ pub unsafe fn scenario_leak_smoke() {
     let delta = rss_after.saturating_sub(rss_before);
     println!(
         "leak smoke: rounds={} rss before={}KB after={}KB delta={}KB",
-        leak_rounds,
-        rss_before, rss_after, delta
+        leak_rounds, rss_before, rss_after, delta
     );
     assert!(delta < 4096, "rss delta too large: {}KB", delta);
 
@@ -215,7 +214,10 @@ pub unsafe fn scenario_manual_churn_marathon() {
         "manual churn marathon done: rounds={} elapsed={:?} rss_delta={}KB",
         rounds, elapsed, delta
     );
-    assert!(delta < 8192, "manual churn marathon rss delta too large: {delta}KB");
+    assert!(
+        delta < 8192,
+        "manual churn marathon rss delta too large: {delta}KB"
+    );
 
     libc::dlclose(handle);
     clear();

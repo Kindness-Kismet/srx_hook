@@ -56,12 +56,18 @@ pub(super) fn prune_dead_slots(state: &mut CoreState, alive_modules: &BTreeSet<S
     }
 }
 
-pub(super) fn prune_dead_single_task_targets(state: &mut CoreState, alive_modules: &BTreeSet<String>) {
+pub(super) fn prune_dead_single_task_targets(
+    state: &mut CoreState,
+    alive_modules: &BTreeSet<String>,
+) {
     let stale_targets: Vec<HookStub> = state
         .single_task_targets
         .iter()
         .filter_map(|(stub, module)| {
-            let has_live_slot = state.task_slots.get(stub).is_some_and(|slots| !slots.is_empty());
+            let has_live_slot = state
+                .task_slots
+                .get(stub)
+                .is_some_and(|slots| !slots.is_empty());
             if !has_live_slot || !alive_modules.contains(module) {
                 Some(*stub)
             } else {

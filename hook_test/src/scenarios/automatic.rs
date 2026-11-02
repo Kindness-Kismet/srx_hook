@@ -8,9 +8,9 @@ use srx_hook::{
 };
 
 use crate::test_ctx::{
-    DLOPEN_POST_COUNT, DLOPEN_PRE_COUNT, HOOK_A_COUNT, current_rss_kb, ensure_ok, env_usize,
-    hook_puts_quiet, hook_test_dlopen_post, hook_test_dlopen_pre, hook_test_trigger, load_hook_test,
-    ScopedEnv,
+    DLOPEN_POST_COUNT, DLOPEN_PRE_COUNT, HOOK_A_COUNT, ScopedEnv, current_rss_kb, ensure_ok,
+    env_usize, hook_puts_quiet, hook_test_dlopen_post, hook_test_dlopen_pre, hook_test_trigger,
+    load_hook_test,
 };
 
 pub unsafe fn scenario_automatic_refresh() {
@@ -217,10 +217,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_disabled() {
                 break;
             }
         }
-        assert!(
-            hit,
-            "forced periodic disabled hook miss at round={round}"
-        );
+        assert!(hit, "forced periodic disabled hook miss at round={round}");
         libc::dlclose(handle);
         std::thread::sleep(Duration::from_millis(30));
     }
@@ -229,7 +226,10 @@ pub unsafe fn scenario_auto_reload_forced_periodic_disabled() {
 
 pub unsafe fn scenario_auto_reload_long_stress() {
     clear();
-    ensure_ok(init(HookMode::Automatic, true), "init auto reload long stress");
+    ensure_ok(
+        init(HookMode::Automatic, true),
+        "init auto reload long stress",
+    );
 
     ensure_ok(
         add_dlopen_callback(
@@ -292,7 +292,10 @@ pub unsafe fn scenario_auto_reload_long_stress() {
         dlopen_post >= rounds,
         "dlopen post callback count too small: {dlopen_post}"
     );
-    assert!(delta < 4096, "auto reload long stress rss delta too large: {delta}KB");
+    assert!(
+        delta < 4096,
+        "auto reload long stress rss delta too large: {delta}KB"
+    );
 
     ensure_ok(
         del_dlopen_callback(

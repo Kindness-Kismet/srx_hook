@@ -6,8 +6,8 @@ use crate::api::{
 use crate::errno::Errno;
 use std::ffi::c_void;
 
-mod cfi;
 mod callback_ctx;
+mod cfi;
 mod hub;
 mod lifecycle;
 mod record;

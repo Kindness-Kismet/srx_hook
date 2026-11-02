@@ -8,7 +8,10 @@ mod stress;
 use crate::test_ctx::env_flag;
 
 pub unsafe fn run_all() {
-    run("cfi-slowpath-disabled", basic::scenario_cfi_slowpath_disabled);
+    run(
+        "cfi-slowpath-disabled",
+        basic::scenario_cfi_slowpath_disabled,
+    );
     run("single", basic::scenario_single_hook_unhook);
     run("multi-chain", basic::scenario_multi_hook_chain_unhook);
     run(
@@ -101,7 +104,10 @@ pub unsafe fn run_all() {
         );
     }
     if env_flag("HOOK_TEST_MARATHON") {
-        run("manual-churn-marathon", stress::scenario_manual_churn_marathon);
+        run(
+            "manual-churn-marathon",
+            stress::scenario_manual_churn_marathon,
+        );
     }
     if env_flag("HOOK_TEST_SOAK") {
         run("soak-suite", stress::scenario_soak_suite);

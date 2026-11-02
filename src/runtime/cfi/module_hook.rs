@@ -153,7 +153,8 @@ fn patch_module_cfi_slot(slot_addr: usize, proxy_addr: usize, pathname: &str) ->
         return Ok(());
     }
 
-    let old_prot = memory::get_addr_protect(slot_addr, Some(pathname)).map_err(|_| Errno::GetProt)?;
+    let old_prot =
+        memory::get_addr_protect(slot_addr, Some(pathname)).map_err(|_| Errno::GetProt)?;
     let writable_prot = memory::PROT_READ_FLAG | memory::PROT_WRITE_FLAG;
     if old_prot != writable_prot {
         memory::set_addr_protect(slot_addr, writable_prot).map_err(|_| Errno::SetProt)?;

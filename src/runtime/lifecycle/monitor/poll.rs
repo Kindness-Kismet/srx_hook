@@ -1,6 +1,6 @@
 // monitor 线程轮询循环，结合事件驱动与周期性轮询两种刷新策略
-use std::sync::atomic::Ordering;
 use std::ffi::c_void;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::{
@@ -126,7 +126,10 @@ pub(super) fn monitor_loop() {
                 }
             } else {
                 fallback_poll.reset_for_event_mode();
-                state = super::GLOBAL.condvar.wait(state).unwrap_or_else(|e| e.into_inner());
+                state = super::GLOBAL
+                    .condvar
+                    .wait(state)
+                    .unwrap_or_else(|e| e.into_inner());
             }
         }
         if !state.monitor_running {
@@ -160,9 +163,7 @@ pub(super) fn monitor_loop() {
                 EpochDelta::AddedOnly => {
                     periodic_epoch_changed = true;
                     periodic_refresh_kind = PeriodicRefreshKind::NewModulesOnly;
-                    super::log::debug(format_args!(
-                        "fallback periodic refresh kind=new-modules"
-                    ));
+                    super::log::debug(format_args!("fallback periodic refresh kind=new-modules"));
                 }
                 EpochDelta::Changed => {
                     periodic_epoch_changed = true;
@@ -183,7 +184,9 @@ pub(super) fn monitor_loop() {
         let mut state = super::GLOBAL.state.lock_or_poison();
         let (status, events, _errors) = if periodic_refresh {
             match periodic_refresh_kind {
-                PeriodicRefreshKind::NewModulesOnly => super::refresh::refresh_new_modules(&mut state),
+                PeriodicRefreshKind::NewModulesOnly => {
+                    super::refresh::refresh_new_modules(&mut state)
+                }
                 PeriodicRefreshKind::Full => super::refresh::refresh_all(&mut state),
             }
         } else {

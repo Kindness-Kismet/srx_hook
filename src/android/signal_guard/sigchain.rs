@@ -7,15 +7,17 @@ use std::sync::OnceLock;
 
 use super::slot;
 use super::{
-    RTLD_NEXT_FALLBACK, SIGCHAIN_ALLOW_NORETURN, SIGCHAIN_LIB_CANDIDATES,
-    AddSpecialSignalHandlerFn, EnsureFrontOfChainFn, RemoveSpecialSignalHandlerFn,
-    SigchainAction, SigchainApiFns, SigchainCallbackFn,
+    AddSpecialSignalHandlerFn, EnsureFrontOfChainFn, RTLD_NEXT_FALLBACK,
+    RemoveSpecialSignalHandlerFn, SIGCHAIN_ALLOW_NORETURN, SIGCHAIN_LIB_CANDIDATES, SigchainAction,
+    SigchainApiFns, SigchainCallbackFn,
 };
 
 // 延迟解析并缓存 sigchain API 函数指针
 fn sigchain_api_fns() -> Option<&'static SigchainApiFns> {
     static SIGCHAIN_API_FNS: OnceLock<Option<SigchainApiFns>> = OnceLock::new();
-    SIGCHAIN_API_FNS.get_or_init(resolve_sigchain_api_fns).as_ref()
+    SIGCHAIN_API_FNS
+        .get_or_init(resolve_sigchain_api_fns)
+        .as_ref()
 }
 
 // 解析 sigchain API：需要 add 和 remove 两个必选符号，ensure_front 可选

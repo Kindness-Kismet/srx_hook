@@ -193,7 +193,10 @@ pub unsafe fn scenario_single_same_basename_multi_instance() {
 
     let base_a = module_base_from_handle(handle_a).expect("resolve base for handle_a failed");
     let base_b = module_base_from_handle(handle_b).expect("resolve base for handle_b failed");
-    assert_ne!(base_a, base_b, "same basename test needs two loaded module instances");
+    assert_ne!(
+        base_a, base_b,
+        "same basename test needs two loaded module instances"
+    );
 
     let stub = hook_single(
         "libhook_test.so",
@@ -302,7 +305,10 @@ pub unsafe fn scenario_instance_qualified_path_rule() {
     let count_after_a = HOOK_A_COUNT.load(Ordering::Relaxed);
     hook_test_trigger(handle_b);
     let count_after_b = HOOK_A_COUNT.load(Ordering::Relaxed);
-    assert!(count_after_a > 0, "right instance rule did not hit target instance");
+    assert!(
+        count_after_a > 0,
+        "right instance rule did not hit target instance"
+    );
     assert_eq!(
         count_after_b, count_after_a,
         "right instance rule should not affect non-target instance"
@@ -316,7 +322,10 @@ pub unsafe fn scenario_instance_qualified_path_rule() {
 
 pub unsafe fn scenario_ignore_instance_qualified_rule() {
     clear();
-    ensure_ok(init(HookMode::Manual, true), "init ignore instance-qualified rule");
+    ensure_ok(
+        init(HookMode::Manual, true),
+        "init ignore instance-qualified rule",
+    );
 
     let (path_a, path_b) = prepare_same_basename_hook_test_instances();
     let handle_a = load_hook_test_abs(&path_a);
@@ -364,7 +373,10 @@ pub unsafe fn scenario_ignore_instance_qualified_rule() {
 
 pub unsafe fn scenario_instance_rule_from_handle_api() {
     clear();
-    ensure_ok(init(HookMode::Manual, true), "init instance rule from handle api");
+    ensure_ok(
+        init(HookMode::Manual, true),
+        "init instance rule from handle api",
+    );
 
     let (path_a, path_b) = prepare_same_basename_hook_test_instances();
     let handle_a = load_hook_test_abs(&path_a);
@@ -372,10 +384,12 @@ pub unsafe fn scenario_instance_rule_from_handle_api() {
 
     let identity_a = get_module_identity(handle_a)
         .or_else(|| get_module_identity_with_symbol(handle_a, "hook_test_trigger"));
-    let identity_a = identity_a.expect("instance-rule-from-handle-api: module identity unavailable");
+    let identity_a =
+        identity_a.expect("instance-rule-from-handle-api: module identity unavailable");
     let identity_b = get_module_identity(handle_b)
         .or_else(|| get_module_identity_with_symbol(handle_b, "hook_test_trigger"));
-    let identity_b = identity_b.expect("instance-rule-from-handle-api: module identity unavailable");
+    let identity_b =
+        identity_b.expect("instance-rule-from-handle-api: module identity unavailable");
     assert_ne!(
         identity_a.instance_id, identity_b.instance_id,
         "instance-rule-from-handle-api needs two different instances"
@@ -397,7 +411,10 @@ pub unsafe fn scenario_instance_rule_from_handle_api() {
     let count_after_a = HOOK_A_COUNT.load(Ordering::Relaxed);
     hook_test_trigger(handle_b);
     let count_after_b = HOOK_A_COUNT.load(Ordering::Relaxed);
-    assert!(count_after_a > 0, "handle api instance rule did not hit target instance");
+    assert!(
+        count_after_a > 0,
+        "handle api instance rule did not hit target instance"
+    );
     assert_eq!(
         count_after_b, count_after_a,
         "handle api instance rule should not affect non-target instance"
@@ -411,7 +428,10 @@ pub unsafe fn scenario_instance_rule_from_handle_api() {
 
 pub unsafe fn scenario_identity_with_symbol_api() {
     clear();
-    ensure_ok(init(HookMode::Manual, true), "init identity with symbol api");
+    ensure_ok(
+        init(HookMode::Manual, true),
+        "init identity with symbol api",
+    );
 
     let handle = load_hook_test();
     assert!(
@@ -420,8 +440,14 @@ pub unsafe fn scenario_identity_with_symbol_api() {
     );
     let identity = get_module_identity_with_symbol(handle, "hook_test_trigger")
         .expect("identity with symbol should resolve");
-    assert!(identity.base_addr != 0, "identity base_addr should be non-zero");
-    assert!(identity.instance_id != 0, "identity instance_id should be non-zero");
+    assert!(
+        identity.base_addr != 0,
+        "identity base_addr should be non-zero"
+    );
+    assert!(
+        identity.instance_id != 0,
+        "identity instance_id should be non-zero"
+    );
     assert!(
         identity.pathname.ends_with("libhook_test.so"),
         "identity path should be libhook_test.so"
@@ -452,12 +478,15 @@ pub unsafe fn scenario_identity_with_symbol_api() {
 
 pub unsafe fn scenario_identity_api_consistency() {
     clear();
-    ensure_ok(init(HookMode::Manual, true), "init identity api consistency");
+    ensure_ok(
+        init(HookMode::Manual, true),
+        "init identity api consistency",
+    );
 
     let handle = load_hook_test();
     let by_handle = get_module_identity(handle);
-    let by_symbol =
-        get_module_identity_with_symbol(handle, "hook_test_trigger").expect("identity by symbol should resolve");
+    let by_symbol = get_module_identity_with_symbol(handle, "hook_test_trigger")
+        .expect("identity by symbol should resolve");
 
     if let Some(by_handle) = by_handle {
         assert_eq!(by_handle.pathname, by_symbol.pathname);
@@ -474,7 +503,10 @@ pub unsafe fn scenario_identity_api_consistency() {
 
 pub unsafe fn scenario_namespace_rule_from_handle_api() {
     clear();
-    ensure_ok(init(HookMode::Manual, true), "init namespace rule from handle api");
+    ensure_ok(
+        init(HookMode::Manual, true),
+        "init namespace rule from handle api",
+    );
 
     let (path_a, path_b) = prepare_same_basename_hook_test_instances();
     let handle_a = load_hook_test_abs(&path_a);
@@ -482,10 +514,12 @@ pub unsafe fn scenario_namespace_rule_from_handle_api() {
 
     let identity_a = get_module_identity(handle_a)
         .or_else(|| get_module_identity_with_symbol(handle_a, "hook_test_trigger"));
-    let identity_a = identity_a.expect("namespace-rule-from-handle-api: module identity unavailable");
+    let identity_a =
+        identity_a.expect("namespace-rule-from-handle-api: module identity unavailable");
     let identity_b = get_module_identity(handle_b)
         .or_else(|| get_module_identity_with_symbol(handle_b, "hook_test_trigger"));
-    let identity_b = identity_b.expect("namespace-rule-from-handle-api: module identity unavailable");
+    let identity_b =
+        identity_b.expect("namespace-rule-from-handle-api: module identity unavailable");
     assert_ne!(
         identity_a.instance_id, identity_b.instance_id,
         "namespace-rule-from-handle-api needs two different instances"

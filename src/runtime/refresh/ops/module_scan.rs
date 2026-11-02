@@ -26,7 +26,8 @@ pub(super) struct LinkMap {
     pub(super) l_prev: *mut LinkMap,
 }
 
-pub(super) type DlinfoFn = unsafe extern "C" fn(*mut c_void, libc::c_int, *mut c_void) -> libc::c_int;
+pub(super) type DlinfoFn =
+    unsafe extern "C" fn(*mut c_void, libc::c_int, *mut c_void) -> libc::c_int;
 pub(super) type Dladdr1Fn = unsafe extern "C" fn(
     *const c_void,
     *mut libc::Dl_info,
@@ -76,7 +77,8 @@ pub(super) fn module_epoch() -> Option<ModuleEpoch> {
     }
 
     let mut epoch = ModuleEpoch { adds: 0, subs: 0 };
-    let ret = unsafe { libc::dl_iterate_phdr(Some(iterate_cb), &mut epoch as *mut _ as *mut c_void) };
+    let ret =
+        unsafe { libc::dl_iterate_phdr(Some(iterate_cb), &mut epoch as *mut _ as *mut c_void) };
     if ret == 0 { None } else { Some(epoch) }
 }
 
@@ -150,7 +152,10 @@ pub(super) fn module_identity_from_handle_with_symbol(
 }
 
 // 合并 primary 和 fallback 两个身份信息，优先取 primary 的非零字段
-fn merge_module_identity(primary: Option<ModuleInfo>, fallback: Option<ModuleInfo>) -> Option<ModuleInfo> {
+fn merge_module_identity(
+    primary: Option<ModuleInfo>,
+    fallback: Option<ModuleInfo>,
+) -> Option<ModuleInfo> {
     match (primary, fallback) {
         (None, None) => None,
         (Some(primary), None) => Some(primary),

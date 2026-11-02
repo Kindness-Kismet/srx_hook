@@ -1,14 +1,14 @@
 // 运行时初始化入口，负责信号处理器安装、CFI 禁用、monitor 线程启动
-use crate::api::HookMode;
 use crate::android::signal_guard;
+use crate::api::HookMode;
 use crate::errno::Errno;
 use crate::log;
 use crate::version;
 
-use super::monitor;
 use super::super::cfi;
 use super::super::state::GLOBAL;
 use super::super::thread_state;
+use super::monitor;
 use crate::runtime::state::{MutexPoisonRecover, set_install_pid};
 
 pub(super) fn get_version() -> String {

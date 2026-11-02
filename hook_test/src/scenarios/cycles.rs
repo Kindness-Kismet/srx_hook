@@ -5,8 +5,8 @@ use srx_hook::{HookMode, clear, hook_single, init, refresh, unhook};
 
 use crate::test_ctx::{
     HOOK_A_COUNT, HOOK_B_COUNT, ensure_ok, hook_puts_cycle_guard, hook_puts_cycle_manual_no_leave,
-    hook_strlen_cycle_guard, hook_strlen_cycle_manual_no_leave, load_hook_test,
-    hook_test_trigger_with_input,
+    hook_strlen_cycle_guard, hook_strlen_cycle_manual_no_leave, hook_test_trigger_with_input,
+    load_hook_test,
 };
 
 pub unsafe fn scenario_cycle_guard_auto() {

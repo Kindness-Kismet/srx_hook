@@ -195,7 +195,11 @@ fn resolve_symbol_from_library(lib_name: &CStr, symbol: &CStr) -> Option<usize> 
     addr
 }
 
-fn collect_module_symbol_addrs_from_elf(modules: &[LoadedModule], symbol: &str, out: &mut BTreeSet<usize>) {
+fn collect_module_symbol_addrs_from_elf(
+    modules: &[LoadedModule],
+    symbol: &str,
+    out: &mut BTreeSet<usize>,
+) {
     for module in modules {
         if module.base_addr == 0 {
             continue;

@@ -5,8 +5,8 @@ use srx_hook::{HookMode, add_ignore, clear, hook_single, init, refresh, unhook};
 
 use crate::test_ctx::{
     HOOK_A_COUNT, HOOK_B_COUNT, HOOK_C_COUNT, ensure_ok, hook_puts_a_chain, hook_puts_b_chain,
-    hook_puts_c_chain, hook_puts_no_leave, hook_puts_quiet, load_hook_test,
-    verify_cfi_slowpath_disabled, hook_test_trigger,
+    hook_puts_c_chain, hook_puts_no_leave, hook_puts_quiet, hook_test_trigger, load_hook_test,
+    verify_cfi_slowpath_disabled,
 };
 
 pub unsafe fn scenario_cfi_slowpath_disabled() {

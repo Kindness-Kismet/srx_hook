@@ -32,7 +32,10 @@ pub(super) fn resolve_dlinfo_fn() -> Option<DlinfoFn> {
             log::debug(format_args!("dlinfo symbol unavailable"));
             None
         } else {
-            log::debug(format_args!("dlinfo symbol resolved at 0x{:x}", symbol as usize));
+            log::debug(format_args!(
+                "dlinfo symbol resolved at 0x{:x}",
+                symbol as usize
+            ));
             Some(unsafe { std::mem::transmute::<*mut c_void, DlinfoFn>(symbol) })
         }
     })
@@ -81,12 +84,7 @@ pub(super) fn resolve_module_from_handle(handle: *mut c_void) -> Option<ModuleIn
         .filter(|id| *id != 0)
         .or_else(|| resolve_namespace_id_from_link_map(link_map_ptr))
         .or_else(|| {
-            resolve_namespace_id_from_noload_cache(
-                pathname,
-                base_addr,
-                instance_id,
-                Some(dlinfo),
-            )
+            resolve_namespace_id_from_noload_cache(pathname, base_addr, instance_id, Some(dlinfo))
         })
         .or_else(|| resolve_namespace_id_by_instance(instance_id))
         .or_else(|| resolve_namespace_id_by_base(base_addr))
@@ -209,7 +207,9 @@ pub(super) fn resolve_module_from_handle_symbol(
         .and_then(|func| resolve_namespace_id_from_handle(func, handle))
         .filter(|id| *id != 0)
         .or_else(|| link_map_ptr.and_then(resolve_namespace_id_from_link_map))
-        .or_else(|| resolve_namespace_id_from_noload_cache(pathname, base_addr, instance_id, dlinfo))
+        .or_else(|| {
+            resolve_namespace_id_from_noload_cache(pathname, base_addr, instance_id, dlinfo)
+        })
         .or_else(|| resolve_namespace_id_by_instance(instance_id))
         .or_else(|| resolve_namespace_id_by_base(base_addr))
         .or_else(|| resolve_namespace_id_by_path(pathname))

@@ -1,7 +1,7 @@
 // Trampoline 代码生成与内存管理
 // 通过汇编模板 + 运行时数据填充，为每个 Hub 生成独立的跳板代码
-use crate::errno::Errno;
 use crate::android::memory;
+use crate::errno::Errno;
 use std::mem::size_of;
 use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -156,8 +156,7 @@ pop_stack:
     .quad 0
 hub_ptr:
     .quad 0
-"#
-    ,
+"#,
     options(att_syntax)
 );
 

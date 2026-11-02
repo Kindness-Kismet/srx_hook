@@ -1,8 +1,8 @@
 // ELF 解析与 PLT/GOT hook 核心模块
 
+use crate::android::memory as util;
 use crate::errno::Errno;
 use crate::log;
-use crate::android::memory as util;
 use std::collections::BTreeSet;
 use std::ffi::{CStr, c_char};
 use std::mem;
@@ -208,7 +208,6 @@ pub struct Elf {
     is_use_gnu_hash: bool,
     is_use_rela: bool,
 }
-
 
 include!("elf/check_init.inc.rs");
 include!("elf/api.inc.rs");
