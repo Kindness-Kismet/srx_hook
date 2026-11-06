@@ -6,7 +6,7 @@ use std::ffi::{CStr, c_char, c_void};
 
 use super::monitor;
 
-// 缓存各 dlopen/dlclose 变体的真实函数地址，首次调用时通过 RTLD_NEXT 解析
+// 缓存各 dlopen/dlclose 变体的真实函数地址。
 static REAL_DLOPEN: OnceCell<usize> = OnceCell::new();
 static REAL_ANDROID_DLOPEN_EXT: OnceCell<usize> = OnceCell::new();
 static REAL_DLCLOSE: OnceCell<usize> = OnceCell::new();
@@ -18,6 +18,27 @@ static REAL_LINKER_DO_DLOPEN: OnceCell<usize> = OnceCell::new();
 static REAL_LINKER_G_DL_MUTEX: OnceCell<usize> = OnceCell::new();
 static REAL_LINKER_GET_ERROR_BUFFER: OnceCell<usize> = OnceCell::new();
 const RTLD_NEXT_FALLBACK: *mut c_void = (-1isize) as *mut c_void;
+
+// 安装监控前完成解析，避免子进程继承这些 OnceCell 的初始化中间态。
+pub(super) fn prime_for_fork() {
+    let _ = *REAL_DLOPEN.get_or_init(|| unsafe { resolve_symbol(c"dlopen") });
+    let _ =
+        *REAL_ANDROID_DLOPEN_EXT.get_or_init(|| unsafe { resolve_symbol(c"android_dlopen_ext") });
+    let _ = *REAL_DLCLOSE.get_or_init(|| unsafe { resolve_symbol(c"dlclose") });
+    let _ = *REAL_LOADER_DLOPEN.get_or_init(|| unsafe { resolve_symbol(c"__loader_dlopen") });
+    let _ = *REAL_LOADER_ANDROID_DLOPEN_EXT
+        .get_or_init(|| unsafe { resolve_symbol(c"__loader_android_dlopen_ext") });
+    let _ = *REAL_LOADER_DLCLOSE.get_or_init(|| unsafe { resolve_symbol(c"__loader_dlclose") });
+    let _ = *REAL_LINKER_DLOPEN_EXT.get_or_init(|| unsafe {
+        resolve_symbol(c"__dl__ZL10dlopen_extPKciPK17android_dlextinfoPv")
+    });
+    let _ = *REAL_LINKER_DO_DLOPEN
+        .get_or_init(|| unsafe { resolve_symbol(c"__dl__Z9do_dlopenPKciPK17android_dlextinfoPv") });
+    let _ = *REAL_LINKER_G_DL_MUTEX
+        .get_or_init(|| unsafe { resolve_symbols(&[c"__dl__ZL10g_dl_mutex", c"__dl_g_dl_mutex"]) });
+    let _ = *REAL_LINKER_GET_ERROR_BUFFER
+        .get_or_init(|| unsafe { resolve_symbol(c"__dl__Z23linker_get_error_bufferv") });
+}
 
 pub(super) unsafe fn call_dlopen_fn(
     addr: usize,

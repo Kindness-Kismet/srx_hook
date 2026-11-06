@@ -9,7 +9,7 @@ use super::super::monitor_calls::{
     call_real_dlopen, call_real_dlopen_with_caller, call_real_loader_android_dlopen_ext,
     call_real_loader_dlclose, call_real_loader_dlopen,
 };
-use crate::runtime::state::RwLockPoisonRecover;
+use crate::runtime::state::MutexPoisonRecover;
 
 pub(super) unsafe extern "C" fn monitor_dlopen(
     filename: *const c_char,
@@ -64,10 +64,10 @@ pub(super) unsafe extern "C" fn monitor_android_dlopen_ext(
     result
 }
 
-// dlclose proxy 需要持有 dlclose_lock 写锁，防止 refresh 期间模块被卸载
+// dlclose 与 refresh 互斥，句柄队列必须在释放锁前失效。
 pub(super) unsafe extern "C" fn monitor_dlclose(handle: *mut c_void) -> libc::c_int {
     let self_ptr = monitor_dlclose as *mut c_void;
-    let dlclose_guard = GLOBAL.dlclose_lock.write_or_poison();
+    let dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
     let result = super::super::with_prev_func(self_ptr, |prev| {
         if prev.is_null() {
             unsafe { call_real_dlclose(handle) }
@@ -76,11 +76,10 @@ pub(super) unsafe extern "C" fn monitor_dlclose(handle: *mut c_void) -> libc::c_
         }
     })
     .unwrap_or_else(|| unsafe { call_real_dlclose(handle) });
-    drop(dlclose_guard);
-
     if result == 0 {
         super::super::request_refresh_async_full();
     }
+    drop(dlclose_guard);
     result
 }
 
@@ -141,7 +140,7 @@ pub(super) unsafe extern "C" fn monitor_loader_android_dlopen_ext(
 
 pub(super) unsafe extern "C" fn monitor_loader_dlclose(handle: *mut c_void) -> libc::c_int {
     let self_ptr = monitor_loader_dlclose as *mut c_void;
-    let dlclose_guard = GLOBAL.dlclose_lock.write_or_poison();
+    let dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
     let result = super::super::with_prev_func(self_ptr, |prev| {
         if prev.is_null() {
             unsafe { call_real_loader_dlclose(handle) }
@@ -150,11 +149,10 @@ pub(super) unsafe extern "C" fn monitor_loader_dlclose(handle: *mut c_void) -> l
         }
     })
     .unwrap_or_else(|| unsafe { call_real_loader_dlclose(handle) });
-    drop(dlclose_guard);
-
     if result == 0 {
         super::super::request_refresh_async_full();
     }
+    drop(dlclose_guard);
     result
 }
 

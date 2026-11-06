@@ -13,7 +13,7 @@ where
     F: FnOnce(&mut ProxyStack) -> R,
 {
     let result = thread_state::with_thread_state(|state| f(state.proxy_stack_mut()));
-    if result.is_none() && !thread_state::should_skip_thread_state() {
+    if result.is_none() {
         thread_state::report_thread_state_unavailable(site);
     }
     result
@@ -46,11 +46,12 @@ fn current_stack_pointer() -> usize {
     }
 }
 
-// 清理已返回的栈帧，栈向低地址增长，sp <= current_sp 的帧已失效
+// 清理已返回的栈帧，栈向低地址增长，sp < current_sp 的帧已失效；
+// sp == current_sp 可能是同深度主动帧，不能剪掉。
 #[inline]
 fn prune_stale_proxy_frames(stack: &mut ProxyStack, current_sp: usize) {
     while let Some(frame) = stack.last() {
-        if frame.stack_sp > current_sp {
+        if frame.stack_sp >= current_sp {
             break;
         }
         let _ = stack.pop();
@@ -144,7 +145,12 @@ pub(super) fn proxy_leave(func: *mut c_void) {
 }
 
 pub(super) fn clear_proxy_stack() {
-    let _ = with_proxy_stack_mut("clear_proxy_stack", |stack| {
-        let _ = stack.clear();
+    let result = thread_state::with_thread_state(|state| {
+        if !thread_state::has_active_trampolines() {
+            let _ = state.proxy_stack_mut().clear();
+        }
     });
+    if result.is_none() {
+        thread_state::report_thread_state_unavailable("clear_proxy_stack");
+    }
 }

@@ -6,26 +6,39 @@ use std::ffi::{c_char, c_void};
 
 use super::super::hub;
 use super::super::refresh;
-use super::super::state::GLOBAL;
+use super::super::state::{GLOBAL, is_forked_child};
 use super::dlopen_callbacks;
 use super::monitor;
 use super::proxy;
-use crate::runtime::state::{MutexPoisonRecover, RwLockPoisonRecover};
+use crate::runtime::state::MutexPoisonRecover;
 
-// 完全重置运行时状态：停止 monitor 线程、恢复所有 hook、清空全部数据
+// 停止 monitor、恢复 GOT 并重置任务；在途调用的返回上下文和退休入口继续保留。
 pub(super) fn clear() {
     let thread = {
         let mut state = GLOBAL.state.lock_or_poison();
+        if state.clearing {
+            return;
+        }
+        state.clearing = true;
         state.monitor_running = false;
-        GLOBAL.condvar.notify_all();
-        state.monitor_thread.take()
+        if is_forked_child() {
+            if let Some(thread) = state.monitor_thread.take() {
+                std::mem::forget(thread);
+            }
+            None
+        } else {
+            state.monitor_thread.take()
+        }
     };
 
     if let Some(handle) = thread {
-        let _ = handle.join();
+        handle.thread().unpark();
+        if handle.thread().id() != std::thread::current().id() {
+            let _ = handle.join();
+        }
     }
 
-    let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
+    let _dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
     let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
     let mut state = GLOBAL.state.lock_or_poison();
     let _ = refresh::restore_all(&mut state);
@@ -45,13 +58,13 @@ pub(super) fn clear() {
     state.process_id = 0;
     state.init.status = Errno::Uninit;
     state.init.mode = HookMode::Automatic;
-    state.next_stub = 1;
 
     monitor::reset_auto_monitor_installed();
     signal_guard::remove_handler();
     proxy::clear_proxy_stack();
     hub::clear_stack();
-    hub::collect_retired(true);
+    hub::collect_retired();
+    state.clearing = false;
 }
 
 pub(super) fn get_mode() -> HookMode {

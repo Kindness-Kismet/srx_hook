@@ -8,6 +8,7 @@ use std::ffi::c_void;
 
 mod callback_ctx;
 mod cfi;
+mod fork;
 mod hub;
 mod lifecycle;
 mod record;
@@ -20,6 +21,10 @@ pub(crate) use state::MutexPoisonRecover;
 
 pub(crate) fn is_forked_child() -> bool {
     state::is_forked_child()
+}
+
+pub(crate) fn fork_safe() -> bool {
+    fork::handlers_registered()
 }
 
 pub(crate) fn get_version() -> String {
@@ -187,12 +192,9 @@ pub(crate) fn del_dlopen_callback(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear, hook_single, init, proxy_enter, proxy_leave,
+        proxy_enter, proxy_leave,
         rules::{module_match, path_match},
-        set_debug,
     };
-    use crate::api::HookMode;
-    use crate::errno::Errno;
     use std::ffi::c_void;
 
     #[test]
@@ -257,37 +259,5 @@ mod tests {
         proxy_leave(func);
         assert!(proxy_enter(func));
         proxy_leave(func);
-    }
-
-    #[test]
-    fn duplicated_proxy_address_is_rejected() {
-        unsafe extern "C" fn dummy_proxy(_s: *const i8) -> i32 {
-            0
-        }
-
-        clear();
-        set_debug(false);
-        assert_eq!(init(HookMode::Manual, false), Errno::Ok);
-
-        let first = hook_single(
-            "libdummy.so",
-            None,
-            "puts",
-            dummy_proxy as *mut c_void,
-            None,
-            std::ptr::null_mut(),
-        );
-        assert!(first.is_some());
-
-        let second = hook_single(
-            "libdummy.so",
-            None,
-            "puts",
-            dummy_proxy as *mut c_void,
-            None,
-            std::ptr::null_mut(),
-        );
-        assert!(second.is_none());
-        clear();
     }
 }

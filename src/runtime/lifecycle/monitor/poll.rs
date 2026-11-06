@@ -7,7 +7,7 @@ use super::{
     MONITOR_FALLBACK_BURST_ROUNDS, MONITOR_FALLBACK_REFRESH_INTERVAL_MAX,
     MONITOR_FALLBACK_REFRESH_INTERVAL_MIN, MONITOR_PERIODIC_ENABLED,
 };
-use crate::runtime::state::{MutexPoisonRecover, RwLockPoisonRecover};
+use crate::runtime::state::MutexPoisonRecover;
 
 // 周期性轮询状态，管理退避间隔和 burst 轮次
 struct FallbackPollState {
@@ -103,45 +103,75 @@ fn classify_epoch_delta(last: Option<(u64, u64)>, current: (u64, u64)) -> EpochD
 
 pub(super) fn monitor_loop() {
     let mut fallback_poll = FallbackPollState::new();
+    let current_thread = std::thread::current().id();
 
     loop {
+        let active_monitor = {
+            let state = super::GLOBAL.state.lock_or_poison();
+            state.monitor_running
+                && state
+                    .monitor_thread
+                    .as_ref()
+                    .is_some_and(|handle| handle.thread().id() == current_thread)
+        };
+        if !active_monitor {
+            break;
+        }
         super::maybe_install_legacy_hooks_on_demand();
 
         let mut state = super::GLOBAL.state.lock_or_poison();
         let mut periodic_refresh = false;
-        while state.monitor_running && !state.refresh_requested {
-            if MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) {
-                let timeout = fallback_poll.timeout();
-                let (next_state, wait_result) = super::GLOBAL
-                    .condvar
-                    .wait_timeout(state, timeout)
-                    .unwrap_or_else(|e| e.into_inner());
-                state = next_state;
-                if state.refresh_requested {
-                    break;
-                }
-                if wait_result.timed_out() {
-                    periodic_refresh = true;
-                    break;
-                }
+        // 事件通过 unpark 唤醒；无事件时超时用于检查退出和周期刷新。
+        if state.monitor_running && !state.refresh_requested {
+            let timeout = if MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) {
+                fallback_poll.timeout()
             } else {
                 fallback_poll.reset_for_event_mode();
-                state = super::GLOBAL
-                    .condvar
-                    .wait(state)
-                    .unwrap_or_else(|e| e.into_inner());
-            }
+                std::time::Duration::from_millis(200)
+            };
+            drop(state);
+            std::thread::park_timeout(timeout);
+            state = super::GLOBAL.state.lock_or_poison();
+            // 等待期间到达的事件仍走事件刷新，不能误判为空闲轮询。
+            periodic_refresh =
+                MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) && !state.refresh_requested;
         }
-        if !state.monitor_running {
+        if !state.monitor_running
+            || !state
+                .monitor_thread
+                .as_ref()
+                .is_some_and(|handle| handle.thread().id() == current_thread)
+        {
             break;
         }
+        if !periodic_refresh && !state.refresh_requested {
+            continue;
+        }
+        drop(state);
+
+        let _dlclose_guard = super::GLOBAL.dlclose_lock.lock_or_poison();
+        let _refresh_guard = super::GLOBAL.refresh_mutex.lock_or_poison();
+        let mut state = super::GLOBAL.state.lock_or_poison();
+        if !state.monitor_running
+            || !state
+                .monitor_thread
+                .as_ref()
+                .is_some_and(|handle| handle.thread().id() == current_thread)
+        {
+            break;
+        }
+
         let known_module_count_before = state.known_modules.len();
         let event_refresh = state.refresh_requested;
         let pending_handles = std::mem::take(&mut state.pending_module_handles);
         state.pending_module_handle_set.clear();
         state.refresh_requested = false;
-        drop(state);
-
+        super::log::debug(format_args!(
+            "monitor refresh event={} periodic={} pending_handles={}",
+            event_refresh,
+            periodic_refresh,
+            pending_handles.len()
+        ));
         if !pending_handles.is_empty() {
             super::log::debug(format_args!(
                 "consume {} pending module handles",
@@ -179,9 +209,6 @@ pub(super) fn monitor_loop() {
             }
         }
 
-        let _dlclose_guard = super::GLOBAL.dlclose_lock.read_or_poison();
-        let _refresh_guard = super::GLOBAL.refresh_mutex.lock_or_poison();
-        let mut state = super::GLOBAL.state.lock_or_poison();
         let (status, events, _errors) = if periodic_refresh {
             match periodic_refresh_kind {
                 PeriodicRefreshKind::NewModulesOnly => {
@@ -197,6 +224,8 @@ pub(super) fn monitor_loop() {
         }
         let known_module_count_after = state.known_modules.len();
         drop(state);
+        drop(_refresh_guard);
+        drop(_dlclose_guard);
         super::super::invoke_callbacks(events);
 
         if !MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) {

@@ -2,6 +2,7 @@ mod automatic;
 mod basic;
 mod cycles;
 mod filters;
+mod fork;
 mod stack_api;
 mod stress;
 
@@ -12,6 +13,20 @@ pub unsafe fn run_all() {
         "cfi-slowpath-disabled",
         basic::scenario_cfi_slowpath_disabled,
     );
+    run("fork-child-chain", fork::scenario_fork_child_hook_chain);
+    run(
+        "fork-from-proxy-context",
+        fork::scenario_fork_from_proxy_preserves_context,
+    );
+    run(
+        "fork-worker-child-reinit",
+        fork::scenario_fork_worker_child_reinit,
+    );
+    run(
+        "fork-child-automatic-refresh",
+        fork::scenario_fork_child_automatic_refresh,
+    );
+
     run("single", basic::scenario_single_hook_unhook);
     run("multi-chain", basic::scenario_multi_hook_chain_unhook);
     run(
@@ -28,6 +43,18 @@ pub unsafe fn run_all() {
     );
     run("ignore", basic::scenario_ignore);
     run("automatic", automatic::scenario_automatic_refresh);
+    run(
+        "auto-callback-unhook",
+        automatic::scenario_auto_callback_can_unhook,
+    );
+    run(
+        "auto-callback-clear-reinit",
+        automatic::scenario_auto_callback_can_clear_and_reinit,
+    );
+    run(
+        "auto-reload-immediate-close",
+        automatic::scenario_auto_reload_immediate_close,
+    );
     run(
         "records-dlopen-callbacks",
         automatic::scenario_records_and_dlopen_callbacks,
@@ -84,12 +111,28 @@ pub unsafe fn run_all() {
     );
     run("cycle-guard-auto", cycles::scenario_cycle_guard_auto);
     run(
+        "same-hub-recursion-preserves-frame",
+        cycles::scenario_same_hub_recursion_preserves_outer_frame,
+    );
+    run(
         "cycle-guard-manual-no-leave",
         cycles::scenario_cycle_guard_manual_no_leave,
     );
     run(
         "concurrent-stress",
         stress::scenario_concurrent_hooking_stress,
+    );
+    run(
+        "clear-in-flight-proxy",
+        stress::scenario_clear_with_proxy_in_flight,
+    );
+    run(
+        "clear-from-proxy-keeps-trampoline",
+        stress::scenario_clear_from_proxy_keeps_live_trampoline,
+    );
+    run(
+        "stale-preentry-target-survives-clear",
+        stress::scenario_stale_preentry_target_survives_clear,
     );
     run(
         "persistent-parallel-stress",

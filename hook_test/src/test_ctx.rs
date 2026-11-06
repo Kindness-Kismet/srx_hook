@@ -1,20 +1,67 @@
 use std::ffi::{CString, c_char, c_void};
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use srx_hook::{
-    SrxHookErrno, get_prev_func, get_return_address, pop_stack, proxy_leave, with_prev_func,
+    SrxHookErrno, get_prev_func, get_return_address, pop_stack, proxy_leave, unhook, with_prev_func,
 };
 
 pub static HOOK_A_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static HOOK_B_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static HOOK_C_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub static FORK_PROXY_CHILD_STATUS: AtomicI32 = AtomicI32::new(-1);
+pub static CLEAR_PROXY_ENTERED: AtomicBool = AtomicBool::new(false);
+pub static CLEAR_PROXY_RELEASE: AtomicBool = AtomicBool::new(false);
+pub static CLEAR_PROXY_RESULT: AtomicI32 = AtomicI32::new(-1);
+pub static CLEAR_SELF_PROXY_ENTERED: AtomicBool = AtomicBool::new(false);
+pub static CLEAR_SELF_PROXY_RELEASE: AtomicBool = AtomicBool::new(false);
+pub static CLEAR_SELF_PROXY_RESULT: AtomicI32 = AtomicI32::new(-1);
 pub static STACK_API_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static DLOPEN_PRE_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static DLOPEN_POST_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub static HOOKED_CALLBACK_UNHOOK_STATUS: AtomicI32 = AtomicI32::new(-1);
+pub static HOOKED_CALLBACK_CLEAR_REINIT_STATUS: AtomicI32 = AtomicI32::new(-1);
+pub static HOOKED_CALLBACK_FROM_OTHER_THREAD: AtomicBool = AtomicBool::new(false);
+pub static HOOKED_CALLBACK_MAIN_THREAD: AtomicUsize = AtomicUsize::new(0);
+pub static RECURSIVE_HOOK_TEST_HANDLE: AtomicUsize = AtomicUsize::new(0);
+pub static RECURSIVE_PROXY_CALLS: AtomicUsize = AtomicUsize::new(0);
+pub static RECURSIVE_PREV_RESULT: AtomicI32 = AtomicI32::new(-1);
 
 pub type PutsFn = unsafe extern "C" fn(*const c_char) -> i32;
 pub type StrlenFn = unsafe extern "C" fn(*const c_char) -> usize;
+
+pub unsafe fn wait_child(pid: libc::pid_t) -> Option<i32> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if waited == pid {
+            return Some(status);
+        }
+        if waited < 0 && unsafe { *libc::__errno() } == libc::EINTR {
+            continue;
+        }
+        if waited < 0 {
+            return None;
+        }
+        if Instant::now() >= deadline {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            loop {
+                let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+                if waited == pid {
+                    break;
+                }
+                if waited < 0 && unsafe { *libc::__errno() } == libc::EINTR {
+                    continue;
+                }
+                return None;
+            }
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 const ARM64_RET_INST: u32 = 0xd65f03c0;
@@ -73,6 +120,149 @@ pub unsafe extern "C" fn hook_puts_quiet(s: *const c_char) -> i32 {
     let _ = s;
     proxy_leave(self_ptr);
     0
+}
+
+pub unsafe extern "C" fn hook_puts_recurse_then_prev(s: *const c_char) -> i32 {
+    HOOK_A_COUNT.fetch_add(1, Ordering::Relaxed);
+    if RECURSIVE_PROXY_CALLS.fetch_add(1, Ordering::Relaxed) == 0 {
+        let handle = RECURSIVE_HOOK_TEST_HANDLE.load(Ordering::Relaxed) as *mut c_void;
+        unsafe { hook_test_trigger(handle) };
+    }
+
+    let self_ptr = hook_puts_recurse_then_prev as *mut c_void;
+    let result = with_prev_func(self_ptr, |prev| {
+        if prev.is_null() {
+            return -1;
+        }
+        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        unsafe { prev_fn(s) }
+    })
+    .unwrap_or(-1);
+    RECURSIVE_PREV_RESULT.store(result, Ordering::Release);
+    result
+}
+
+pub unsafe extern "C" fn unhook_from_hooked_callback(
+    task_stub: srx_hook::HookStub,
+    status_code: i32,
+    _caller_path_name: *const c_char,
+    _sym_name: *const c_char,
+    _new_func: *mut c_void,
+    _prev_func: *mut c_void,
+    _arg: *mut c_void,
+) {
+    if libc::pthread_self() as usize != HOOKED_CALLBACK_MAIN_THREAD.load(Ordering::Relaxed) {
+        HOOKED_CALLBACK_FROM_OTHER_THREAD.store(true, Ordering::Relaxed);
+    }
+    if status_code == SrxHookErrno::Ok.as_i32()
+        && HOOKED_CALLBACK_UNHOOK_STATUS
+            .compare_exchange(-1, i32::MIN, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        HOOKED_CALLBACK_UNHOOK_STATUS.store(unhook(task_stub).as_i32(), Ordering::Relaxed);
+    }
+}
+
+pub unsafe extern "C" fn clear_and_reinit_from_hooked_callback(
+    _task_stub: srx_hook::HookStub,
+    status_code: i32,
+    _caller_path_name: *const c_char,
+    _sym_name: *const c_char,
+    _new_func: *mut c_void,
+    _prev_func: *mut c_void,
+    _arg: *mut c_void,
+) {
+    if status_code != SrxHookErrno::Ok.as_i32()
+        || HOOKED_CALLBACK_CLEAR_REINIT_STATUS
+            .compare_exchange(-1, i32::MIN, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+
+    if libc::pthread_self() as usize != HOOKED_CALLBACK_MAIN_THREAD.load(Ordering::Relaxed) {
+        HOOKED_CALLBACK_FROM_OTHER_THREAD.store(true, Ordering::Relaxed);
+    }
+    srx_hook::clear();
+    let status = srx_hook::init(srx_hook::HookMode::Automatic, true);
+    HOOKED_CALLBACK_CLEAR_REINIT_STATUS.store(status.as_i32(), Ordering::Release);
+}
+
+pub unsafe extern "C" fn hook_puts_wait_for_clear(s: *const c_char) -> i32 {
+    let self_ptr = hook_puts_wait_for_clear as *mut c_void;
+    CLEAR_PROXY_ENTERED.store(true, Ordering::Release);
+    while !CLEAR_PROXY_RELEASE.load(Ordering::Acquire) {
+        unsafe { libc::sched_yield() };
+    }
+    let result = with_prev_func(self_ptr, |prev| {
+        if prev.is_null() {
+            return -1;
+        }
+        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        unsafe { prev_fn(s) }
+    })
+    .unwrap_or(-1);
+    CLEAR_PROXY_RESULT.store(result, Ordering::Release);
+    result
+}
+
+pub unsafe extern "C" fn hook_puts_clear_self_and_wait(s: *const c_char) -> i32 {
+    let self_ptr = hook_puts_clear_self_and_wait as *mut c_void;
+    srx_hook::clear();
+    CLEAR_SELF_PROXY_ENTERED.store(true, Ordering::Release);
+    while !CLEAR_SELF_PROXY_RELEASE.load(Ordering::Acquire) {
+        unsafe { libc::sched_yield() };
+    }
+    let result = with_prev_func(self_ptr, |prev| {
+        if prev.is_null() {
+            return -1;
+        }
+        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        unsafe { prev_fn(s) }
+    })
+    .unwrap_or(-1);
+    CLEAR_SELF_PROXY_RESULT.store(result, Ordering::Release);
+    result
+}
+
+pub unsafe extern "C" fn hook_puts_fork_from_proxy(s: *const c_char) -> i32 {
+    let self_ptr = hook_puts_fork_from_proxy as *mut c_void;
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        if srx_hook::refresh().0 != SrxHookErrno::Ok {
+            unsafe { libc::_exit(1) };
+        }
+        let next = get_prev_func(self_ptr);
+        let return_address = get_return_address();
+        if next.is_null() || return_address.is_null() {
+            unsafe { libc::_exit(1) };
+        }
+        return with_prev_func(self_ptr, |prev| {
+            let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+            unsafe { prev_fn(s) }
+        })
+        .unwrap_or(-1);
+    }
+    if pid < 0 {
+        FORK_PROXY_CHILD_STATUS.store(2, Ordering::Relaxed);
+        return -1;
+    }
+
+    let Some(status) = (unsafe { wait_child(pid) }) else {
+        FORK_PROXY_CHILD_STATUS.store(2, Ordering::Relaxed);
+        return -1;
+    };
+    let child_ok = libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+    FORK_PROXY_CHILD_STATUS.store(if child_ok { 0 } else { 1 }, Ordering::Relaxed);
+
+    with_prev_func(self_ptr, |prev| {
+        if prev.is_null() {
+            return 0;
+        }
+        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        unsafe { prev_fn(s) }
+    })
+    .unwrap_or(0)
 }
 
 pub unsafe extern "C" fn hook_puts_no_leave(s: *const c_char) -> i32 {
@@ -253,8 +443,6 @@ impl Drop for ScopedEnv {
     }
 }
 
-const HOOK_TEST_WORK_DIR: &str = "/data/local/tmp/srx_hook_test";
-
 #[cfg(target_arch = "aarch64")]
 fn android_api_level() -> i32 {
     let prop_name = c"ro.build.version.sdk";
@@ -335,22 +523,28 @@ pub unsafe fn load_hook_test_lazy() -> *mut c_void {
 }
 
 pub fn prepare_same_basename_hook_test_instances() -> (CString, CString) {
-    let src = format!("{HOOK_TEST_WORK_DIR}/libhook_test.so");
-    let dir_a = format!("{HOOK_TEST_WORK_DIR}/ns_a");
-    let dir_b = format!("{HOOK_TEST_WORK_DIR}/ns_b");
-    let dst_a = format!("{dir_a}/libhook_test.so");
-    let dst_b = format!("{dir_b}/libhook_test.so");
+    // 用测试可执行文件所在目录作为工作目录，避免硬编码目录在非 root 运行时
+    // 不可写；ns_a/ns_b 只要求同 basename 的两个独立文件路径。
+    let exe = std::env::current_exe().expect("current_exe failed");
+    let work_dir = exe
+        .parent()
+        .expect("current_exe parent failed")
+        .to_path_buf();
+    let src = work_dir.join("libhook_test.so");
+    let dir_a = work_dir.join("ns_a");
+    let dir_b = work_dir.join("ns_b");
+    let dst_a = dir_a.join("libhook_test.so");
+    let dst_b = dir_b.join("libhook_test.so");
 
     fs::create_dir_all(&dir_a).expect("create ns_a dir failed");
     fs::create_dir_all(&dir_b).expect("create ns_b dir failed");
     fs::copy(&src, &dst_a).expect("copy libhook_test to ns_a failed");
     fs::copy(&src, &dst_b).expect("copy libhook_test to ns_b failed");
 
-    let path_a = CString::new(dst_a).expect("path_a cstring failed");
-    let path_b = CString::new(dst_b).expect("path_b cstring failed");
+    let path_a = CString::new(dst_a.to_string_lossy().as_bytes()).expect("path_a cstring failed");
+    let path_b = CString::new(dst_b.to_string_lossy().as_bytes()).expect("path_b cstring failed");
     (path_a, path_b)
 }
-
 pub unsafe fn load_hook_test_abs(path: &CString) -> *mut c_void {
     let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
     assert!(!handle.is_null(), "dlopen abs hook_test failed");

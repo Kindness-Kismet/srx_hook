@@ -8,7 +8,8 @@ use crate::version;
 use super::super::cfi;
 use super::super::state::GLOBAL;
 use super::super::thread_state;
-use super::monitor;
+use super::{monitor, process};
+use crate::runtime::fork::register_handlers;
 use crate::runtime::state::{MutexPoisonRecover, set_install_pid};
 
 pub(super) fn get_version() -> String {
@@ -27,15 +28,29 @@ fn resolve_self_base_addr() -> usize {
 }
 
 pub(super) fn init(mode: HookMode, debug: bool) -> Errno {
+    if !register_handlers() {
+        return Errno::InitErrHook;
+    }
     let mut should_start_monitor = false;
     let status = {
         let mut state = GLOBAL.state.lock_or_poison();
+        if state.clearing {
+            return Errno::Uninit;
+        }
+        let restart_monitor = process::ensure_process_context(&mut state);
         if state.init.status != Errno::Uninit {
-            return state.init.status;
+            let status = state.init.status;
+            drop(state);
+            if restart_monitor && status == Errno::Ok {
+                monitor::start_monitor_thread();
+                monitor::install_auto_loader_monitor_hooks();
+            }
+            return status;
         }
 
         state.debug = debug;
         log::set_debug_enabled(debug);
+        log::debug(format_args!("fork handlers registered=true"));
         state.init.mode = mode;
         state.self_base_addr = resolve_self_base_addr();
         let pid = unsafe { libc::getpid() };

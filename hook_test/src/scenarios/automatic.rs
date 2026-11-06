@@ -3,14 +3,16 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use srx_hook::{
-    HookMode, RECORD_ITEM_ALL, add_dlopen_callback, clear, del_dlopen_callback, get_recordable,
-    get_records, hook_single, init, set_recordable,
+    HookMode, RECORD_ITEM_ALL, SrxHookErrno, add_dlopen_callback, clear, del_dlopen_callback,
+    get_recordable, get_records, hook_single, init, set_recordable,
 };
 
 use crate::test_ctx::{
-    DLOPEN_POST_COUNT, DLOPEN_PRE_COUNT, HOOK_A_COUNT, ScopedEnv, current_rss_kb, ensure_ok,
-    env_usize, hook_puts_quiet, hook_test_dlopen_post, hook_test_dlopen_pre, hook_test_trigger,
-    load_hook_test,
+    DLOPEN_POST_COUNT, DLOPEN_PRE_COUNT, HOOK_A_COUNT, HOOKED_CALLBACK_CLEAR_REINIT_STATUS,
+    HOOKED_CALLBACK_FROM_OTHER_THREAD, HOOKED_CALLBACK_MAIN_THREAD, HOOKED_CALLBACK_UNHOOK_STATUS,
+    ScopedEnv, clear_and_reinit_from_hooked_callback, current_rss_kb, ensure_ok, env_usize,
+    hook_puts_quiet, hook_test_dlopen_post, hook_test_dlopen_pre, hook_test_trigger,
+    load_hook_test, unhook_from_hooked_callback,
 };
 
 pub unsafe fn scenario_automatic_refresh() {
@@ -36,6 +38,153 @@ pub unsafe fn scenario_automatic_refresh() {
         "automatic refresh did not hook new module"
     );
 
+    libc::dlclose(handle);
+    clear();
+}
+
+pub unsafe fn scenario_auto_callback_can_unhook() {
+    clear();
+    ensure_ok(init(HookMode::Automatic, true), "init auto callback unhook");
+    HOOKED_CALLBACK_UNHOOK_STATUS.store(-1, Ordering::Relaxed);
+    HOOKED_CALLBACK_FROM_OTHER_THREAD.store(false, Ordering::Relaxed);
+    HOOKED_CALLBACK_MAIN_THREAD.store(libc::pthread_self() as usize, Ordering::Relaxed);
+
+    let _stub = hook_single(
+        "libhook_test.so",
+        None,
+        "puts",
+        hook_puts_quiet as *mut c_void,
+        Some(unhook_from_hooked_callback),
+        std::ptr::null_mut(),
+    )
+    .expect("hook_single auto callback unhook failed");
+    let handle = load_hook_test();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while HOOKED_CALLBACK_UNHOOK_STATUS.load(Ordering::Relaxed) < 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        HOOKED_CALLBACK_UNHOOK_STATUS.load(Ordering::Relaxed),
+        SrxHookErrno::Ok.as_i32(),
+        "hook callback could not unhook while monitor refreshed"
+    );
+    assert!(
+        HOOKED_CALLBACK_FROM_OTHER_THREAD.load(Ordering::Relaxed),
+        "hook callback did not run on the monitor worker"
+    );
+
+    HOOK_A_COUNT.store(0, Ordering::Relaxed);
+    hook_test_trigger(handle);
+    assert_eq!(HOOK_A_COUNT.load(Ordering::Relaxed), 0);
+    libc::dlclose(handle);
+    clear();
+}
+
+pub unsafe fn scenario_auto_callback_can_clear_and_reinit() {
+    clear();
+    HOOKED_CALLBACK_CLEAR_REINIT_STATUS.store(-1, Ordering::Relaxed);
+    HOOKED_CALLBACK_FROM_OTHER_THREAD.store(false, Ordering::Relaxed);
+    HOOKED_CALLBACK_MAIN_THREAD.store(libc::pthread_self() as usize, Ordering::Relaxed);
+    let baseline_threads = std::fs::read_dir("/proc/self/task")
+        .expect("read process threads")
+        .count();
+    ensure_ok(init(HookMode::Automatic, true), "init auto callback clear");
+
+    let _stub = hook_single(
+        "libhook_test.so",
+        None,
+        "puts",
+        hook_puts_quiet as *mut c_void,
+        Some(clear_and_reinit_from_hooked_callback),
+        std::ptr::null_mut(),
+    )
+    .expect("hook_single auto callback clear failed");
+    let handle = load_hook_test();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while HOOKED_CALLBACK_CLEAR_REINIT_STATUS.load(Ordering::Acquire) < 0
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        HOOKED_CALLBACK_CLEAR_REINIT_STATUS.load(Ordering::Acquire),
+        SrxHookErrno::Ok.as_i32(),
+        "hook callback could not clear and reinitialize on the monitor worker"
+    );
+    assert!(
+        HOOKED_CALLBACK_FROM_OTHER_THREAD.load(Ordering::Relaxed),
+        "hook callback did not run on the monitor worker"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read_dir("/proc/self/task")
+        .expect("read process threads")
+        .count()
+        > baseline_threads + 1
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        std::fs::read_dir("/proc/self/task")
+            .expect("read process threads")
+            .count(),
+        baseline_threads + 1,
+        "stopped monitor worker survived reinitialization"
+    );
+
+    HOOK_A_COUNT.store(0, Ordering::Relaxed);
+    let _child_stub = hook_single(
+        "libhook_test.so",
+        None,
+        "puts",
+        hook_puts_quiet as *mut c_void,
+        None,
+        std::ptr::null_mut(),
+    )
+    .expect("hook_single after callback reinit failed");
+    hook_test_trigger(handle);
+    assert!(HOOK_A_COUNT.load(Ordering::Relaxed) > 0);
+    libc::dlclose(handle);
+    clear();
+}
+
+pub unsafe fn scenario_auto_reload_immediate_close() {
+    clear();
+    ensure_ok(init(HookMode::Automatic, true), "init auto immediate close");
+    let _stub = hook_single(
+        "libhook_test.so",
+        None,
+        "puts",
+        hook_puts_quiet as *mut c_void,
+        None,
+        std::ptr::null_mut(),
+    )
+    .expect("hook_single auto immediate close failed");
+
+    for _ in 0..64 {
+        let handle = load_hook_test();
+        assert_eq!(libc::dlclose(handle), 0, "immediate dlclose failed");
+    }
+
+    let handle = load_hook_test();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut hit = false;
+    while Instant::now() < deadline {
+        HOOK_A_COUNT.store(0, Ordering::Relaxed);
+        hook_test_trigger(handle);
+        if HOOK_A_COUNT.load(Ordering::Relaxed) > 0 {
+            hit = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        hit,
+        "automatic hook missed after immediate load/unload churn"
+    );
     libc::dlclose(handle);
     clear();
 }

@@ -1,18 +1,14 @@
 // Trampoline 代码生成与内存管理
 // 通过汇编模板 + 运行时数据填充，为每个 Hub 生成独立的跳板代码
-use crate::android::memory;
 use crate::errno::Errno;
 use std::mem::size_of;
 use std::ptr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const TRAMPO_ALIGN: usize = 16;
-// 释放后的冷却期，防止被立即复用时指令缓存未刷新
-const TRAMPO_DELAY_SEC: u64 = 5;
 
 mod manager;
 
-// aarch64 trampoline 模板：保存全部调用约定寄存器 -> push_stack -> 调用 proxy -> pop_stack -> 恢复并返回
+// aarch64 跳板：保存参数，保持原始 SP 分发调用，恢复返回寄存器和调用方地址。
 #[cfg(target_arch = "aarch64")]
 std::arch::global_asm!(
     r#"
@@ -33,9 +29,12 @@ srx_hub_trampo_template_start:
 
     ldr   x0, hub_ptr
     mov   x1, lr
+    add   x2, sp, #0xd0
+    adr   x3, trampo_return
     ldr   x16, push_stack
     blr   x16
     mov   x17, x0
+    str   x1, [sp, #0x48]
 
     ldp   q6, q7, [sp, #0xb0]
     ldp   q4, q5, [sp, #0x90]
@@ -47,20 +46,24 @@ srx_hub_trampo_template_start:
     ldp   x2, x3, [sp, #0x10]
     ldp   x0, x1, [sp], #0xd0
 
-    sub   sp, sp, #0x40
-    str   lr, [sp]
-    blr   x17
-    stp   x0, x1, [sp, #0x08]
-    stp   q0, q1, [sp, #0x20]
+    br    x17
+
+trampo_return:
+    sub   sp, sp, #0x50
+    stp   x0, x1, [sp]
+    stp   q0, q1, [sp, #0x10]
+    stp   q2, q3, [sp, #0x30]
 
     ldr   x0, hub_ptr
+    add   x1, sp, #0x50
     ldr   x16, pop_stack
     blr   x16
 
-    ldp   x0, x1, [sp, #0x08]
-    ldp   q0, q1, [sp, #0x20]
-    ldr   lr, [sp]
-    add   sp, sp, #0x40
+    mov   lr, x0
+    ldp   x0, x1, [sp]
+    ldp   q0, q1, [sp, #0x10]
+    ldp   q2, q3, [sp, #0x30]
+    add   sp, sp, #0x50
     ret
 
 srx_hub_trampo_template_data:
@@ -73,7 +76,7 @@ hub_ptr:
 "#
 );
 
-// x86_64 trampoline 模板：同 aarch64 逻辑，使用 AT&T 语法
+// x86_64 跳板：替换返回地址后保持原始参数布局分发，使用 AT&T 语法。
 #[cfg(target_arch = "x86_64")]
 std::arch::global_asm!(
     r#"
@@ -105,8 +108,11 @@ srx_hub_trampo_template_start:
 
     movq    hub_ptr(%rip), %rdi
     movq    8(%rbp), %rsi
+    leaq    16(%rbp), %rdx
+    leaq    trampo_return(%rip), %rcx
     call    *push_stack(%rip)
     movq    %rax, %r11
+    movq    %rdx, 8(%rbp)
 
     movupd  176(%rsp), %xmm0
     movupd  160(%rsp), %xmm1
@@ -128,26 +134,26 @@ srx_hub_trampo_template_start:
 
     movq    %rbp, %rsp
     popq    %rbp
-    subq    $8, %rsp
-    call    *%r11
-    addq    $8, %rsp
+    jmp     *%r11
 
-    // pop_stack 保存区：48 字节数据 + 8 字节对齐 padding，确保 call 前 rsp 为 16 字节对齐
-    subq    $72, %rsp
+trampo_return:
+    subq    $48, %rsp
     movq    %rax,   (%rsp)
     movq    %rdx,  8(%rsp)
     movupd  %xmm0, 16(%rsp)
     movupd  %xmm1, 32(%rsp)
 
     movq    hub_ptr(%rip), %rdi
+    leaq    48(%rsp), %rsi
     call    *pop_stack(%rip)
+    movq    %rax, %r11
 
     movq      (%rsp), %rax
     movq     8(%rsp), %rdx
     movupd  16(%rsp), %xmm0
     movupd  32(%rsp), %xmm1
-    addq    $72, %rsp
-    ret
+    addq    $48, %rsp
+    jmp     *%r11
 
 srx_hub_trampo_template_data:
 push_stack:
@@ -180,31 +186,17 @@ fn trampo_size() -> usize {
     align_up(code_size + size_of::<usize>() * 3, TRAMPO_ALIGN)
 }
 
-fn now_sec() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+pub(super) fn alloc_hub(orig_addr: usize) -> Result<*mut super::Hub, Errno> {
+    manager::alloc_hub(orig_addr)
 }
 
-pub(super) fn alloc_trampo() -> Result<usize, Errno> {
-    manager::alloc_trampo()
-}
-
-pub(super) fn free_trampo(trampo: usize) {
-    manager::free_trampo(trampo);
-}
-
-// 初始化 trampoline：复制模板代码、填充数据槽、刷新 icache、设置 RX 权限
+// 只写入尚未发布的页面，由管理器统一刷新指令缓存并设置 RX 权限。
 pub(super) unsafe fn init_trampo(
     trampo: usize,
     hub_ptr: usize,
     push_stack: usize,
     pop_stack: usize,
 ) -> Result<(), Errno> {
-    let writable_prot = memory::PROT_READ_FLAG | memory::PROT_WRITE_FLAG;
-    memory::set_addr_protect(trampo, writable_prot).map_err(|_| Errno::InitErrTrampo)?;
-
     let start = ptr::addr_of!(srx_hub_trampo_template_start) as usize;
     let data = ptr::addr_of!(srx_hub_trampo_template_data) as usize;
     let code_size = data.saturating_sub(start);
@@ -220,8 +212,8 @@ pub(super) unsafe fn init_trampo(
         ptr::write(data_ptr.add(2), hub_ptr);
     }
 
-    memory::flush_instruction_cache_range(trampo, trampo + code_size + size_of::<usize>() * 3);
-    let execute_prot = memory::PROT_READ_FLAG | memory::PROT_EXEC_FLAG;
-    memory::set_addr_protect(trampo, execute_prot).map_err(|_| Errno::InitErrTrampo)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

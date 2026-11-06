@@ -1,4 +1,5 @@
 // 运行时核心状态定义，包含所有 hook 任务、slot、模块信息及全局同步原语
+use super::fork::{ForkMutex, ForkMutexGuard};
 use crate::api::{
     CallerAllowFilter, HookMode, HookStub, HookedCallback, PostDlopenCallback, PreDlopenCallback,
 };
@@ -6,21 +7,19 @@ use crate::errno::Errno;
 use once_cell::sync::Lazy;
 use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread::JoinHandle;
 
-// 无锁的安装时 PID，用于检测 fork 子进程
-// fork 后子进程的 PID 与此值不同，可快速判断是否在 fork 子进程中
+// 最近一次初始化或接管运行时的进程 PID。
 static INSTALL_PID: AtomicI32 = AtomicI32::new(0);
 
-// 记录安装时的 PID（初始化时调用）
+// 初始化或子进程显式接管运行时时更新 PID。
 pub(crate) fn set_install_pid(pid: i32) {
     INSTALL_PID.store(pid, Ordering::Release);
 }
 
-// 无锁检测是否在 fork 子进程中
-// 返回 true 表示当前进程是 fork 出来的子进程
+// 仅调用继承的 hook 不会接管运行时，也不会重启 monitor。
 #[inline]
 pub(crate) fn is_forked_child() -> bool {
     let install_pid = INSTALL_PID.load(Ordering::Acquire);
@@ -31,29 +30,34 @@ pub(crate) fn is_forked_child() -> bool {
     current_pid != install_pid
 }
 
-// Mutex/RwLock poison 恢复扩展，避免持锁线程 panic 后引发连锁 panic
+// 统一全局可重置锁与局部标准 Mutex 的 guard 访问接口。
 pub(crate) trait MutexPoisonRecover<T> {
-    fn lock_or_poison(&self) -> MutexGuard<'_, T>;
-}
-
-pub(crate) trait RwLockPoisonRecover<T> {
-    fn read_or_poison(&self) -> RwLockReadGuard<'_, T>;
-    fn write_or_poison(&self) -> RwLockWriteGuard<'_, T>;
+    type Guard<'a>: std::ops::Deref<Target = T> + std::ops::DerefMut
+    where
+        T: 'a,
+        Self: 'a;
+    fn lock_or_poison(&self) -> Self::Guard<'_>;
 }
 
 impl<T> MutexPoisonRecover<T> for Mutex<T> {
-    fn lock_or_poison(&self) -> MutexGuard<'_, T> {
+    type Guard<'a>
+        = std::sync::MutexGuard<'a, T>
+    where
+        T: 'a,
+        Self: 'a;
+    fn lock_or_poison(&self) -> Self::Guard<'_> {
         self.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-impl<T> RwLockPoisonRecover<T> for RwLock<T> {
-    fn read_or_poison(&self) -> RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn write_or_poison(&self) -> RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(|e| e.into_inner())
+impl<T> MutexPoisonRecover<T> for ForkMutex<T> {
+    type Guard<'a>
+        = ForkMutexGuard<'a, T>
+    where
+        T: 'a,
+        Self: 'a;
+    fn lock_or_poison(&self) -> Self::Guard<'_> {
+        self.lock()
     }
 }
 
@@ -187,6 +191,7 @@ pub(super) struct CoreState {
     pub(super) pending_module_handles: VecDeque<usize>,
     pub(super) pending_module_handle_set: BTreeSet<usize>,
     pub(super) refresh_requested: bool,
+    pub(super) clearing: bool,
     pub(super) monitor_running: bool,
     pub(super) monitor_thread: Option<JoinHandle<()>>,
 }
@@ -194,18 +199,16 @@ pub(super) struct CoreState {
 // 全局同步容器：state 保护核心状态，refresh_mutex 串行化 refresh
 // dlclose_lock 在 dlclose 期间阻止 slot 写入
 pub(super) struct GlobalState {
-    pub(super) state: Mutex<CoreState>,
-    pub(super) refresh_mutex: Mutex<()>,
-    pub(super) dlclose_lock: RwLock<()>,
-    pub(super) condvar: Condvar,
+    pub(super) state: ForkMutex<CoreState>,
+    pub(super) refresh_mutex: ForkMutex<()>,
+    pub(super) dlclose_lock: ForkMutex<()>,
 }
 
 pub(super) static GLOBAL: Lazy<GlobalState> = Lazy::new(|| GlobalState {
-    state: Mutex::new(CoreState {
+    state: ForkMutex::new(CoreState {
         next_stub: 1,
         ..CoreState::default()
     }),
-    refresh_mutex: Mutex::new(()),
-    dlclose_lock: RwLock::new(()),
-    condvar: Condvar::new(),
+    refresh_mutex: ForkMutex::new(()),
+    dlclose_lock: ForkMutex::new(()),
 });

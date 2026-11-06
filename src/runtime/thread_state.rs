@@ -4,6 +4,12 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod trampoline;
+pub(crate) use trampoline::{
+    active_trampoline_count, current_active_trampoline_count, has_active_trampolines,
+    has_trampoline_frame, reset_after_fork_child, trampoline_enter, trampoline_leave,
+};
+
 pub(crate) const HUB_STACK_CAP: usize = 32;
 pub(crate) const PROXY_STACK_CAP: usize = 32;
 
@@ -32,7 +38,7 @@ pub(crate) struct FixedStack<T: Copy, const N: usize> {
 }
 
 impl<T: Copy, const N: usize> FixedStack<T, N> {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         let items = unsafe { MaybeUninit::<[MaybeUninit<T>; N]>::uninit().assume_init() };
         Self { len: 0, items }
     }
@@ -154,12 +160,6 @@ static PROXY_STACK_OVERFLOW: AtomicU64 = AtomicU64::new(0);
 type ThreadStatePtr = *mut ThreadRuntimeState;
 
 const RESERVED_SENTINEL: *const c_void = ptr::dangling::<c_void>();
-
-// fork 子进程走无状态旁路，避免在子进程热路径触发额外分配
-#[inline]
-pub(crate) fn should_skip_thread_state() -> bool {
-    crate::runtime::state::is_forked_child()
-}
 
 // pthread key 析构：线程退出时释放线程状态，并设置析构保护标记
 unsafe extern "C" fn destroy_thread_state(raw_ptr: *mut c_void) {
@@ -314,10 +314,6 @@ pub(crate) fn with_thread_state<R, F>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ThreadRuntimeState) -> R,
 {
-    if should_skip_thread_state() {
-        return None;
-    }
-
     let keys = ensure_thread_state_keys()?;
     let raw_ptr = get_or_init_thread_state_ptr(keys)?;
     let state = unsafe { &mut *raw_ptr };

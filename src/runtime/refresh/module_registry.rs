@@ -24,7 +24,7 @@ pub(super) fn module_instance_key(
     format!("{pathname}#{base_addr:x}%{instance_id:x}^{namespace_id:x}")
 }
 
-// 清理已卸载模块对应的 slot，销毁关联 hub 并更新 task_slots 索引
+// 清理已卸载模块的 slot，退役关联 Hub 并更新 task_slots 索引。
 pub(super) fn prune_dead_slots(state: &mut CoreState, alive_modules: &BTreeSet<String>) {
     let mut stale = Vec::new();
     for key in state.slots.keys() {
@@ -42,7 +42,7 @@ pub(super) fn prune_dead_slots(state: &mut CoreState, alive_modules: &BTreeSet<S
             continue;
         };
         if slot.hub_ptr != 0 {
-            hub::destroy_hub(slot.hub_ptr as *mut hub::Hub, true);
+            hub::destroy_hub(slot.hub_ptr as *mut hub::Hub);
         }
         for stub in slot.task_chain {
             let Some(slot_set) = state.task_slots.get_mut(&stub) else {

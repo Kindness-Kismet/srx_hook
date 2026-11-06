@@ -18,6 +18,10 @@ mod entry_control;
 mod entry_hook;
 mod entry_init;
 
+pub(super) fn reset_monitor_after_fork_child() {
+    monitor::reset_after_fork_child();
+}
+
 pub(super) fn get_version() -> String {
     entry_init::get_version()
 }

@@ -71,7 +71,7 @@ pub(super) fn module_identity_from_handle_with_symbol(
     ops::module_identity_from_handle_with_symbol(handle, probe_symbol)
 }
 
-// 移除指定 task 的所有 GOT slot hook，无活跃 proxy 时销毁 hub
+// 移除指定 task 的 GOT hook，无活跃 proxy 时恢复原地址并退役 Hub。
 pub(super) fn unhook_task(state: &mut CoreState, task_stub: HookStub) -> Errno {
     let slot_keys = match state.task_slots.remove(&task_stub) {
         Some(keys) => keys,
@@ -117,7 +117,7 @@ pub(super) fn unhook_task(state: &mut CoreState, task_stub: HookStub) -> Errno {
         }
 
         if !have_enabled_proxy {
-            hub::destroy_hub(slot.hub_ptr as *mut hub::Hub, true);
+            hub::destroy_hub(slot.hub_ptr as *mut hub::Hub);
             slot.hub_ptr = 0;
         }
 
@@ -130,7 +130,7 @@ pub(super) fn unhook_task(state: &mut CoreState, task_stub: HookStub) -> Errno {
     first_err
 }
 
-// 恢复所有 GOT slot 为原始值并销毁全部 hub，用于进程 fork 后重建
+// clear 时恢复所有 GOT slot，并退役对应 Hub。
 pub(super) fn restore_all(state: &mut CoreState) -> Errno {
     let mut first_err = Errno::Ok;
     let slot_keys: Vec<_> = state.slots.keys().cloned().collect();
@@ -148,7 +148,7 @@ pub(super) fn restore_all(state: &mut CoreState) -> Errno {
 
     for slot in state.slots.values_mut() {
         if slot.hub_ptr != 0 {
-            hub::destroy_hub(slot.hub_ptr as *mut hub::Hub, true);
+            hub::destroy_hub(slot.hub_ptr as *mut hub::Hub);
             slot.hub_ptr = 0;
         }
     }
@@ -164,7 +164,7 @@ fn refresh_internal(
     only_new: bool,
     target_task: Option<HookStub>,
 ) -> (Errno, Vec<CallbackEvent>, Vec<RefreshError>) {
-    hub::collect_retired(false);
+    hub::collect_retired();
     let modules = ops::enumerate_modules();
     cfi::retain_module_cfi_hook_state(&modules);
     let mut module_keys = BTreeSet::new();

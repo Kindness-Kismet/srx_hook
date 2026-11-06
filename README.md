@@ -39,9 +39,13 @@ let stub = hook_single(
 );
 assert!(stub.is_some());
 
-let r = refresh();
-assert_eq!(r, SrxHookErrno::Ok);
+let (status, _errors) = refresh();
+assert_eq!(status, SrxHookErrno::Ok);
 ```
+
+`clear()` 恢复 GOT 并移除任务，旧 `HookStub` 不会复用于新任务。在途调用的返回上下文继续保留；已经发布的跳板入口和 Hub 保留到进程退出，持续创建新入口仍会增加内存。原生返回栈最多追踪 32 层，超出容量或线程状态不可用时回落原函数。
+
+普通 `fork()` 的子进程可继续调用继承的 hook；如需自动监控后续加载的库，应再次调用 `init()`，或通过 `refresh()` 等生命周期入口接管运行时。`fork_safe()` 只表示 atfork 处理器注册成功，不保证第三方锁、直接 syscall/clone、vfork 或异步信号处理中的任意 API 调用安全。
 
 ## 测试
 
@@ -51,17 +55,20 @@ assert_eq!(r, SrxHookErrno::Ok);
 cargo build --manifest-path hook_test/Cargo.toml \
   --target aarch64-linux-android --release
 
+adb shell mkdir -p /data/local/tmp/srx_hook_test
 adb push target/aarch64-linux-android/release/hook_test \
   /data/local/tmp/srx_hook_test/
 adb push target/aarch64-linux-android/release/libhook_test.so \
   /data/local/tmp/srx_hook_test/
 adb shell chmod 755 /data/local/tmp/srx_hook_test/hook_test
-adb shell /data/local/tmp/srx_hook_test/hook_test
+adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=. ./hook_test"
 ```
+
+库单元测试需要在对应架构的 Android 环境执行，并使用 `--test-threads=1` 串行运行，避免测试间共享的进程级 hook 状态相互干扰。
 
 ### CI 自动验证
 
-项目通过 GitHub Actions 在 x86_64 Android 模拟器上执行两级验证：
+项目通过 GitHub Actions 对两个 Android 架构执行 workspace/all-target Clippy 和 release 构建，并在 x86_64 Android 模拟器上串行执行库单元测试及两级场景验证：
 
 **短时验证**（每次 push / PR 触发）：
 
@@ -93,7 +100,7 @@ adb shell /data/local/tmp/srx_hook_test/hook_test
 | `HOOK_TEST_MARATHON_ROUNDS` | 手动长跑轮次 | 4000 |
 | `HOOK_TEST_MARATHON_REPORT_STEP` | 手动长跑进度输出间隔 | 400 |
 | `HOOK_TEST_AUTO_MARATHON` | 启用自动模式长跑 | 0 |
-| `HOOK_TEST_AUTO_MARATHON_ROUNDS` | 自动模式长跑轮次 | 4000 |
+| `HOOK_TEST_AUTO_MARATHON_ROUNDS` | 自动模式长跑轮次 | 2000 |
 | `HOOK_TEST_AUTO_MARATHON_REPORT_STEP` | 自动模式进度输出间隔 | 400 |
 | `HOOK_TEST_SOAK` | 启用复合夜跑场景 | 0 |
 | `HOOK_TEST_SOAK_ROUNDS` | 复合夜跑轮次 | 6 |

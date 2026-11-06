@@ -2,7 +2,7 @@ use crate::errno::Errno;
 use crate::runtime;
 use std::ffi::{c_char, c_void};
 
-// hook 任务的唯一标识，由运行时分配
+// 进程内递增的任务标识；clear 后旧标识失效，不复用于新任务。
 pub type HookStub = u64;
 
 // refresh 中单个模块的错误详情，用于诊断 ELF 解析失败等问题
@@ -96,12 +96,17 @@ pub fn get_version() -> String {
     runtime::get_version()
 }
 
-// 无锁检测当前进程是否为 fork 子进程
+// 判断当前进程是否尚未接管 fork 继承的运行时。
 pub fn is_forked_child() -> bool {
     runtime::is_forked_child()
 }
 
-// 初始化 hook 运行时，只能调用一次
+// 查询 atfork 处理器是否注册成功，不保证调用方锁或 vfork 子进程操作安全。
+pub fn fork_safe() -> bool {
+    runtime::fork_safe()
+}
+
+// 初始化运行时；fork 子进程再次调用可恢复自动监控。
 pub fn init(mode: HookMode, debug: bool) -> Errno {
     if in_external_callback() {
         return Errno::InitErrSafe;
@@ -288,7 +293,7 @@ pub fn get_prev_func(func: *mut c_void) -> *mut c_void {
     runtime::get_prev_func(func)
 }
 
-// 获取 prev_func 并在闭包中执行，自动管理栈帧释放与环路检测
+// 获取 prev_func 并在闭包中执行，闭包结束时清理逻辑 proxy 上下文。
 pub fn with_prev_func<R, F>(func: *mut c_void, f: F) -> Option<R>
 where
     F: FnOnce(*mut c_void) -> R,
@@ -301,17 +306,17 @@ pub fn get_return_address() -> *mut c_void {
     runtime::get_return_address()
 }
 
-// 手动弹出 trampoline 栈帧
+// 按返回地址移除逻辑 Hub 帧，不影响原生返回栈。
 pub fn pop_stack(return_address: *mut c_void) {
     runtime::pop_stack(return_address)
 }
 
-// 手动进入 proxy 环路检测，返回 false 表示命中递归环
+// 进入 proxy 环路检测；命中递归、栈满或线程状态不可用时返回 false。
 pub fn proxy_enter(func: *mut c_void) -> bool {
     runtime::proxy_enter(func)
 }
 
-// 手动退出 proxy 环路检测，释放当前栈帧
+// 退出 proxy 环路检测并移除对应的逻辑 Hub 帧。
 pub fn proxy_leave(func: *mut c_void) {
     runtime::proxy_leave(func)
 }

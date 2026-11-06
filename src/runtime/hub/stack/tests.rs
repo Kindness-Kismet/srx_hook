@@ -2,7 +2,7 @@
 use super::{
     HubFrame, get_prev_func, pop_stack_by_return_address, proxy_leave, with_test_hub_stack,
 };
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 fn make_node(
     func: usize,
@@ -11,7 +11,7 @@ fn make_node(
 ) -> *mut super::super::ProxyNode {
     Box::into_raw(Box::new(super::super::ProxyNode {
         func,
-        ref_count: 1,
+        ref_count: AtomicUsize::new(1),
         enabled: AtomicBool::new(enabled),
         next,
     }))

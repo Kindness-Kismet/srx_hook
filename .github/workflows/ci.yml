@@ -47,10 +47,10 @@ jobs:
         run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: Clippy
-        run: cargo clippy --target ${{ matrix.target }} -- -D warnings
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
       - name: 构建（Release）
-        run: cargo build --target ${{ matrix.target }} --release
+        run: cargo build --workspace --target ${{ matrix.target }} --release
 
   short-test:
     name: 短时验证（x86_64 模拟器）
@@ -80,7 +80,13 @@ jobs:
         run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: 构建 hook_test
-        run: cargo build --manifest-path hook_test/Cargo.toml --target x86_64-linux-android --release
+        run: |
+          set -euo pipefail
+          cargo build --workspace --target x86_64-linux-android --release
+          cargo test --lib --target x86_64-linux-android --release --no-run --message-format=json > /tmp/srx_hook_units.json
+          unit_test=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "srx_hook") | .executable // empty' /tmp/srx_hook_units.json)
+          test -n "$unit_test" && test -x "$unit_test"
+          echo "SRX_UNIT_TEST=$unit_test" >> "$GITHUB_ENV"
 
       - name: 启用 KVM
         run: |
@@ -96,10 +102,14 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             adb shell mkdir -p ${{ env.REMOTE_DIR }}
+            adb push "$SRX_UNIT_TEST" ${{ env.REMOTE_DIR }}/srx_hook_units
+            adb shell chmod 755 ${{ env.REMOTE_DIR }}/srx_hook_units
+            adb shell "timeout 120 ${{ env.REMOTE_DIR }}/srx_hook_units --test-threads=1"
             adb push target/x86_64-linux-android/release/hook_test ${{ env.REMOTE_DIR }}/
             adb push target/x86_64-linux-android/release/libhook_test.so ${{ env.REMOTE_DIR }}/
             adb shell chmod 755 ${{ env.REMOTE_DIR }}/hook_test
-            adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=/data/local/tmp/srx_hook_test HOOK_TEST_MARATHON=1 HOOK_TEST_MARATHON_ROUNDS=120 HOOK_TEST_MARATHON_REPORT_STEP=30 HOOK_TEST_AUTO_MARATHON=1 HOOK_TEST_AUTO_MARATHON_ROUNDS=60 HOOK_TEST_AUTO_MARATHON_REPORT_STEP=20 HOOK_TEST_SOAK=1 HOOK_TEST_SOAK_ROUNDS=1 HOOK_TEST_SOAK_REPORT_STEP=1 HOOK_TEST_AUTO_RELOAD_ROUNDS=24 HOOK_TEST_CONCURRENT_WORKERS=16 HOOK_TEST_CONCURRENT_CALLS=16 HOOK_TEST_CONCURRENT_ROUNDS=16 HOOK_TEST_PERSISTENT_WORKERS=12 HOOK_TEST_PERSISTENT_CALLS=48 HOOK_TEST_LEAK_ROUNDS=64 ./hook_test" 2>&1 | tee /tmp/hook_test_output.txt
+            adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=/data/local/tmp/srx_hook_test HOOK_TEST_MARATHON=1 HOOK_TEST_MARATHON_ROUNDS=120 HOOK_TEST_MARATHON_REPORT_STEP=30 HOOK_TEST_AUTO_MARATHON=1 HOOK_TEST_AUTO_MARATHON_ROUNDS=60 HOOK_TEST_AUTO_MARATHON_REPORT_STEP=20 HOOK_TEST_SOAK=1 HOOK_TEST_SOAK_ROUNDS=1 HOOK_TEST_SOAK_REPORT_STEP=1 HOOK_TEST_AUTO_RELOAD_ROUNDS=24 HOOK_TEST_CONCURRENT_WORKERS=16 HOOK_TEST_CONCURRENT_CALLS=16 HOOK_TEST_CONCURRENT_ROUNDS=16 HOOK_TEST_PERSISTENT_WORKERS=12 HOOK_TEST_PERSISTENT_CALLS=48 HOOK_TEST_LEAK_ROUNDS=64 ./hook_test" > /tmp/hook_test_output.txt 2>&1 || { cat /tmp/hook_test_output.txt; exit 1; }
+            cat /tmp/hook_test_output.txt
             grep -q "hook_test all scenarios passed" /tmp/hook_test_output.txt && echo "通过：短时验证" || { echo "失败：未找到通过标记"; exit 1; }
 
   medium-test:
@@ -130,7 +140,13 @@ jobs:
         run: echo "${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: 构建 hook_test
-        run: cargo build --manifest-path hook_test/Cargo.toml --target x86_64-linux-android --release
+        run: |
+          set -euo pipefail
+          cargo build --workspace --target x86_64-linux-android --release
+          cargo test --lib --target x86_64-linux-android --release --no-run --message-format=json > /tmp/srx_hook_units.json
+          unit_test=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "srx_hook") | .executable // empty' /tmp/srx_hook_units.json)
+          test -n "$unit_test" && test -x "$unit_test"
+          echo "SRX_UNIT_TEST=$unit_test" >> "$GITHUB_ENV"
 
       - name: 启用 KVM
         run: |
@@ -147,8 +163,12 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
             adb shell mkdir -p ${{ env.REMOTE_DIR }}
+            adb push "$SRX_UNIT_TEST" ${{ env.REMOTE_DIR }}/srx_hook_units
+            adb shell chmod 755 ${{ env.REMOTE_DIR }}/srx_hook_units
+            adb shell "timeout 120 ${{ env.REMOTE_DIR }}/srx_hook_units --test-threads=1"
             adb push target/x86_64-linux-android/release/hook_test ${{ env.REMOTE_DIR }}/
             adb push target/x86_64-linux-android/release/libhook_test.so ${{ env.REMOTE_DIR }}/
             adb shell chmod 755 ${{ env.REMOTE_DIR }}/hook_test
-            adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=/data/local/tmp/srx_hook_test HOOK_TEST_MARATHON=1 HOOK_TEST_MARATHON_ROUNDS=1200 HOOK_TEST_MARATHON_REPORT_STEP=200 HOOK_TEST_AUTO_MARATHON=1 HOOK_TEST_AUTO_MARATHON_ROUNDS=600 HOOK_TEST_AUTO_MARATHON_REPORT_STEP=100 HOOK_TEST_SOAK=1 HOOK_TEST_SOAK_ROUNDS=3 HOOK_TEST_SOAK_REPORT_STEP=1 HOOK_TEST_AUTO_RELOAD_ROUNDS=120 HOOK_TEST_CONCURRENT_WORKERS=48 HOOK_TEST_CONCURRENT_CALLS=48 HOOK_TEST_CONCURRENT_ROUNDS=48 HOOK_TEST_PERSISTENT_WORKERS=24 HOOK_TEST_PERSISTENT_CALLS=128 HOOK_TEST_LEAK_ROUNDS=320 ./hook_test" 2>&1 | tee /tmp/hook_test_output.txt
+            adb shell "cd /data/local/tmp/srx_hook_test && LD_LIBRARY_PATH=/data/local/tmp/srx_hook_test HOOK_TEST_MARATHON=1 HOOK_TEST_MARATHON_ROUNDS=1200 HOOK_TEST_MARATHON_REPORT_STEP=200 HOOK_TEST_AUTO_MARATHON=1 HOOK_TEST_AUTO_MARATHON_ROUNDS=600 HOOK_TEST_AUTO_MARATHON_REPORT_STEP=100 HOOK_TEST_SOAK=1 HOOK_TEST_SOAK_ROUNDS=3 HOOK_TEST_SOAK_REPORT_STEP=1 HOOK_TEST_AUTO_RELOAD_ROUNDS=120 HOOK_TEST_CONCURRENT_WORKERS=48 HOOK_TEST_CONCURRENT_CALLS=48 HOOK_TEST_CONCURRENT_ROUNDS=48 HOOK_TEST_PERSISTENT_WORKERS=24 HOOK_TEST_PERSISTENT_CALLS=128 HOOK_TEST_LEAK_ROUNDS=320 ./hook_test" > /tmp/hook_test_output.txt 2>&1 || { cat /tmp/hook_test_output.txt; exit 1; }
+            cat /tmp/hook_test_output.txt
             grep -q "hook_test all scenarios passed" /tmp/hook_test_output.txt && echo "通过：中时验证" || { echo "失败：未找到通过标记"; exit 1; }

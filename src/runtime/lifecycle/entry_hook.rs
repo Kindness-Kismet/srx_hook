@@ -5,9 +5,9 @@ use std::ffi::c_void;
 
 use super::super::refresh::{self};
 use super::super::state::{AllowFilterEntry, GLOBAL, HookedEntry, Task, TaskType};
-use super::process;
 use super::{add_task, invoke_callbacks};
-use crate::runtime::state::{MutexPoisonRecover, RwLockPoisonRecover};
+use super::{monitor, process};
+use crate::runtime::state::MutexPoisonRecover;
 
 pub(super) fn hook_single(
     caller_path_name: &str,
@@ -99,23 +99,32 @@ pub(super) fn unhook(stub: HookStub) -> Errno {
         return Errno::InvalidArg;
     }
 
-    let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
+    let _dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
     let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
     let mut state = GLOBAL.state.lock_or_poison();
+    if state.clearing {
+        return Errno::Uninit;
+    }
     if state.init.status != Errno::Ok {
         return state.init.status;
     }
-    process::ensure_process_context(&mut state);
-
     if !state.tasks.contains_key(&stub) {
         return Errno::InvalidArg;
     }
+    let restart_monitor = process::ensure_process_context(&mut state);
 
     let status = refresh::unhook_task(&mut state, stub);
     super::super::record::add_unhook_record(&mut state, status.as_i32(), stub);
     state.tasks.remove(&stub);
     state.task_order.retain(|value| *value != stub);
     state.task_slots.remove(&stub);
+    drop(state);
+    drop(_refresh_guard);
+    drop(_dlclose_guard);
+    if restart_monitor {
+        monitor::start_monitor_thread();
+        monitor::install_auto_loader_monitor_hooks();
+    }
     status
 }
 
@@ -125,6 +134,9 @@ pub(super) fn add_ignore(caller_path_name: &str) -> Errno {
     }
 
     let mut state = GLOBAL.state.lock_or_poison();
+    if state.clearing {
+        return Errno::Uninit;
+    }
     if state
         .ignore_callers
         .iter()
@@ -141,6 +153,13 @@ pub(super) fn get_module_identity(handle: *mut c_void) -> Option<ModuleIdentity>
     if handle.is_null() {
         return None;
     }
+    let _dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
+    let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
+    let state = GLOBAL.state.lock_or_poison();
+    if state.clearing {
+        return None;
+    }
+    drop(state);
     let module = refresh::module_identity_from_handle(handle)?;
     refresh::observe_module_identity(&module);
     Some(ModuleIdentity {
@@ -158,6 +177,13 @@ pub(super) fn get_module_identity_with_symbol(
     if handle.is_null() || probe_symbol.is_empty() {
         return None;
     }
+    let _dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
+    let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
+    let state = GLOBAL.state.lock_or_poison();
+    if state.clearing {
+        return None;
+    }
+    drop(state);
     let module = refresh::module_identity_from_handle_with_symbol(handle, probe_symbol)?;
     refresh::observe_module_identity(&module);
     Some(ModuleIdentity {
@@ -169,15 +195,24 @@ pub(super) fn get_module_identity_with_symbol(
 }
 
 pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
-    let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
+    let _dlclose_guard = GLOBAL.dlclose_lock.lock_or_poison();
     let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
     let mut state = GLOBAL.state.lock_or_poison();
+    if state.clearing {
+        return (Errno::Uninit, Vec::new());
+    }
     if state.init.status != Errno::Ok {
         return (state.init.status, Vec::new());
     }
-    process::ensure_process_context(&mut state);
+    let restart_monitor = process::ensure_process_context(&mut state);
     let (status, events, errors) = refresh::refresh_all(&mut state);
     drop(state);
+    drop(_refresh_guard);
+    drop(_dlclose_guard);
+    if restart_monitor {
+        monitor::start_monitor_thread();
+        monitor::install_auto_loader_monitor_hooks();
+    }
     invoke_callbacks(events);
     (status, errors)
 }

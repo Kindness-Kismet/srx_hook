@@ -1,5 +1,6 @@
 // dlopen/dlclose 监控模块，自动检测动态库加载卸载并触发 hook 刷新
 // 支持 loader hook (API >= 26) 和 legacy hook 两种策略，可自动降级
+use crate::api::HookMode;
 use crate::errno::Errno;
 use crate::log;
 use std::env;
@@ -11,7 +12,7 @@ use std::time::Duration;
 
 use super::super::refresh;
 use super::super::state::GLOBAL;
-use super::super::state::{Task, TaskType};
+use super::super::state::{CoreState, Task, TaskType};
 use crate::runtime::state::MutexPoisonRecover;
 mod poll;
 mod proxies;
@@ -60,9 +61,27 @@ pub(super) fn reset_auto_monitor_installed() {
     MONITOR_PERIODIC_ENABLED.store(should_enable_periodic_fallback(false), Ordering::SeqCst);
 }
 
+pub(super) fn reset_after_fork_child() {
+    AUTO_MONITOR_INSTALLED.store(false, Ordering::Relaxed);
+    MONITOR_PERIODIC_ESCALATED.store(false, Ordering::Relaxed);
+    MONITOR_LOADER_SUCCESS_STREAK.store(0, Ordering::Relaxed);
+    MONITOR_LEGACY_HOOK_INSTALLED.store(false, Ordering::Relaxed);
+    MONITOR_LEGACY_HOOK_REQUESTED.store(false, Ordering::Relaxed);
+}
+
 pub(super) fn install_auto_loader_monitor_hooks() {
-    if AUTO_MONITOR_INSTALLED.swap(true, Ordering::SeqCst) {
-        return;
+    {
+        let state = GLOBAL.state.lock_or_poison();
+        if state.clearing
+            || state.init.status != Errno::Ok
+            || state.init.mode != HookMode::Automatic
+            || !state.monitor_running
+            || AUTO_MONITOR_INSTALLED.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        super::monitor_calls::prime_for_fork();
+        AUTO_MONITOR_INSTALLED.store(true, Ordering::SeqCst);
     }
 
     let use_loader_hooks = should_use_loader_hooks();
@@ -205,7 +224,7 @@ fn install_legacy_hooks_for_all_modules() {
             new_func: proxy as usize,
             hooked: None,
         };
-        let _ = super::add_task(task);
+        add_monitor_task_if_missing(task);
     }
 
     log::info(format_args!("legacy monitor hooks installed"));
@@ -239,6 +258,25 @@ fn install_loader_hooks_for_libdl() {
             new_func: proxy as usize,
             hooked: None,
         };
+        add_monitor_task_if_missing(task);
+    }
+}
+
+fn monitor_task_installed(state: &CoreState, task: &Task) -> bool {
+    state.tasks.values().any(|registered| {
+        registered.task_type == task.task_type
+            && registered.caller_path_name.as_deref() == task.caller_path_name.as_deref()
+            && registered.sym_name == task.sym_name
+            && registered.new_func == task.new_func
+    })
+}
+
+fn add_monitor_task_if_missing(task: Task) {
+    let installed = {
+        let state = GLOBAL.state.lock_or_poison();
+        monitor_task_installed(&state, &task)
+    };
+    if !installed {
         let _ = super::add_task(task);
     }
 }
@@ -283,7 +321,11 @@ fn android_api_level() -> i32 {
 
 pub(super) fn start_monitor_thread() {
     let mut state = GLOBAL.state.lock_or_poison();
-    if state.monitor_running {
+    if state.clearing
+        || state.init.status != Errno::Ok
+        || state.init.mode != HookMode::Automatic
+        || state.monitor_running
+    {
         return;
     }
     state.monitor_running = true;
@@ -296,6 +338,12 @@ pub(super) fn start_monitor_thread() {
             state.monitor_running = false;
             state.init.status = Errno::InitErrDlMtr;
         }
+    }
+}
+
+pub(super) fn wake_monitor_thread(state: &CoreState) {
+    if let Some(handle) = state.monitor_thread.as_ref() {
+        handle.thread().unpark();
     }
 }
 
