@@ -182,7 +182,7 @@ impl Elf {
                 return Err(Errno::Format);
             }
             let header = slice::from_raw_parts(rel, 4);
-            if header != [b'A', b'P', b'S', b'2'] {
+            if header != *b"APS2" {
                 log::error(format_args!("android rel/rela format error"));
                 return Err(Errno::Format);
             }
