@@ -122,7 +122,9 @@ pub(crate) struct InitializationCall {
 impl InitializationCall {
     pub(crate) fn enter() -> Self {
         ACTIVE_INITIALIZATION.fetch_add(1, Ordering::SeqCst);
-        Self { pid: unsafe { libc::getpid() } }
+        Self {
+            pid: unsafe { libc::getpid() },
+        }
     }
 }
 

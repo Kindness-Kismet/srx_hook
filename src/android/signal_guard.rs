@@ -245,10 +245,18 @@ pub fn add_handler() -> Result<(), Errno> {
         return Ok(());
     }
 
-    install_sigaction(libc::SIGSEGV, handlers::sigsegv_handler as *const () as usize,
-        &SIGSEGV_OLD_ACTION, &SIGSEGV_INSTALLED)?;
-    install_sigaction(libc::SIGBUS, handlers::sigbus_handler as *const () as usize,
-        &SIGBUS_OLD_ACTION, &SIGBUS_INSTALLED)?;
+    install_sigaction(
+        libc::SIGSEGV,
+        handlers::sigsegv_handler as *const () as usize,
+        &SIGSEGV_OLD_ACTION,
+        &SIGSEGV_INSTALLED,
+    )?;
+    install_sigaction(
+        libc::SIGBUS,
+        handlers::sigbus_handler as *const () as usize,
+        &SIGBUS_OLD_ACTION,
+        &SIGBUS_INSTALLED,
+    )?;
 
     HANDLER_INSTALL_MODE.store(HANDLER_MODE_SIGACTION, Ordering::Release);
     log::debug(format_args!("signal handlers installed via sigaction"));
@@ -273,7 +281,8 @@ fn install_sigaction(
         store_old_action(previous, old);
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = handler;
-        action.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART | SA_EXPOSE_TAGBITS;
+        action.sa_flags =
+            libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART | SA_EXPOSE_TAGBITS;
         libc::sigfillset(&mut action.sa_mask);
         let mut replaced = Box::new(std::mem::zeroed::<libc::sigaction>());
         if abi::raw_sigaction(signal, &action, &mut *replaced) != 0 {

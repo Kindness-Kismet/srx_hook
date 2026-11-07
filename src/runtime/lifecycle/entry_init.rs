@@ -8,8 +8,8 @@ use crate::version;
 use super::super::state::GLOBAL;
 use super::super::thread_state;
 use super::monitor;
-use crate::runtime::state::set_install_pid;
 use crate::runtime::fork;
+use crate::runtime::state::set_install_pid;
 use std::sync::atomic::Ordering;
 
 pub(super) fn get_version() -> String {
@@ -56,7 +56,11 @@ pub(super) fn init(mode: HookMode, debug: bool) -> Errno {
     status
 }
 
-fn initialize_runtime(runtime: &super::super::state::ProcessRuntime, mode: HookMode, debug: bool) -> Errno {
+fn initialize_runtime(
+    runtime: &super::super::state::ProcessRuntime,
+    mode: HookMode,
+    debug: bool,
+) -> Errno {
     if let Err(error) = fork::register_handlers() {
         return error;
     }

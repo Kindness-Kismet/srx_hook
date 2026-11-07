@@ -123,7 +123,11 @@ pub(super) fn commit(
     let committed = !old.is_null() && prepared.committed;
     CommitResult {
         status,
-        events: if committed { prepared.events } else { Vec::new() },
+        events: if committed {
+            prepared.events
+        } else {
+            Vec::new()
+        },
         errors: prepared.errors,
         committed,
         retryable,

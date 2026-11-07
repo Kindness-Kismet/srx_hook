@@ -95,7 +95,10 @@ impl ProcessRuntime {
         drop(ready);
     }
 
-    pub(in crate::runtime) fn update(&self, mut edit: impl FnMut(&mut CoreState) -> Errno) -> Errno {
+    pub(in crate::runtime) fn update(
+        &self,
+        mut edit: impl FnMut(&mut CoreState) -> Errno,
+    ) -> Errno {
         for _ in 0..Self::PUBLISH_ATTEMPTS {
             if let Err(status) = fork::check_management() {
                 return status;

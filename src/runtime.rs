@@ -17,8 +17,8 @@ mod rules;
 mod state;
 mod thread_state;
 
-pub(crate) use state::PidLocal;
 pub(crate) use fork::{InitializationCall, LoaderCall};
+pub(crate) use state::PidLocal;
 
 pub(crate) fn is_forked_child() -> bool {
     state::is_forked_child()
@@ -48,7 +48,16 @@ pub(crate) fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_single_checked(
+        caller_path_name,
+        callee_path_name,
+        sym_name,
+        new_func,
+        hooked,
+        hooked_arg,
+    )
+    .or_else(|error| error.stub.ok_or(error))
+    .ok()
 }
 
 pub(crate) fn hook_single_checked(
@@ -78,7 +87,17 @@ pub(crate) fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_partial_checked(
+        caller_allow_filter,
+        caller_allow_filter_arg,
+        callee_path_name,
+        sym_name,
+        new_func,
+        hooked,
+        hooked_arg,
+    )
+    .or_else(|error| error.stub.ok_or(error))
+    .ok()
 }
 
 pub(crate) fn hook_partial_checked(
@@ -108,7 +127,9 @@ pub(crate) fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+        .or_else(|error| error.stub.ok_or(error))
+        .ok()
 }
 
 pub(crate) fn hook_all_checked(

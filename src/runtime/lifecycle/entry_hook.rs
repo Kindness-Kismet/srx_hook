@@ -16,7 +16,16 @@ pub(super) fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_single_checked(
+        caller_path_name,
+        callee_path_name,
+        sym_name,
+        new_func,
+        hooked,
+        hooked_arg,
+    )
+    .or_else(|error| error.stub.ok_or(error))
+    .ok()
 }
 
 pub(super) fn hook_single_checked(
@@ -56,7 +65,17 @@ pub(super) fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_partial_checked(
+        caller_allow_filter,
+        caller_allow_filter_arg,
+        callee_path_name,
+        sym_name,
+        new_func,
+        hooked,
+        hooked_arg,
+    )
+    .or_else(|error| error.stub.ok_or(error))
+    .ok()
 }
 
 pub(super) fn hook_partial_checked(
@@ -98,7 +117,9 @@ pub(super) fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+        .or_else(|error| error.stub.ok_or(error))
+        .ok()
 }
 
 pub(super) fn hook_all_checked(
@@ -139,7 +160,11 @@ pub(super) fn unhook(stub: HookStub) -> Errno {
     let runtime = &*GLOBAL;
     let result = super::transaction::run(runtime, false, |state| {
         let mut prepared = refresh::prepare_unhook(state, stub)?;
-        super::super::record::add_unhook_record(&mut prepared.draft, prepared.status.as_i32(), stub);
+        super::super::record::add_unhook_record(
+            &mut prepared.draft,
+            prepared.status.as_i32(),
+            stub,
+        );
         Ok(prepared)
     });
     invoke_callbacks(result.events);
@@ -158,7 +183,11 @@ pub(super) fn add_ignore(caller_path_name: &str) -> Errno {
         if state.clearing {
             return Errno::Busy;
         }
-        if !state.ignore_callers.iter().any(|value| value == caller_path_name) {
+        if !state
+            .ignore_callers
+            .iter()
+            .any(|value| value == caller_path_name)
+        {
             state.ignore_callers.push(caller_path_name.to_string());
         }
         Errno::Ok
@@ -208,7 +237,8 @@ pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
         refresh::prepare_refresh(state, false, None)
     });
     invoke_callbacks(result.events);
-    if result.status == Errno::Ok && runtime.snapshot().init.mode == crate::api::HookMode::Automatic {
+    if result.status == Errno::Ok && runtime.snapshot().init.mode == crate::api::HookMode::Automatic
+    {
         super::monitor::start_monitor_thread();
     }
     (result.status, result.errors)

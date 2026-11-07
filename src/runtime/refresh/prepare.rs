@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::lease::{self, LoaderEpoch};
 use super::matcher::{is_task_match_caller, resolve_callee_addrs};
 use super::module_registry::{module_key, prune_dead_single_task_targets};
-use super::transaction::{AuxiliaryPatch, ObservedSlot, PreparedRefresh};
 #[cfg(target_arch = "aarch64")]
 use super::transaction::InstructionPatch;
+use super::transaction::{AuxiliaryPatch, ObservedSlot, PreparedRefresh};
 use super::{CallbackEvent, RefreshError, ops};
 
 struct ModuleSnapshot {
@@ -122,7 +122,11 @@ pub(in crate::runtime) fn prepare_clear(state: &CoreState) -> Result<PreparedRef
 pub(in crate::runtime) fn prepare_cfi_init(state: &CoreState) -> Result<PreparedRefresh, Errno> {
     let snapshot = discover_modules()?;
     let mut prepared = PreparedRefresh::new(
-        state.clone(), snapshot.epoch, Errno::Ok, Vec::new(), Vec::new(),
+        state.clone(),
+        snapshot.epoch,
+        Errno::Ok,
+        Vec::new(),
+        Vec::new(),
     )?;
     prepared.instructions = capture_cfi_instructions(&snapshot)?;
     prepared.prepare_changes(

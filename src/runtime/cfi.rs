@@ -1,10 +1,10 @@
 // CFI (Control Flow Integrity) 绕过模块，负责禁用 Android 的 CFI slowpath 检查
 // 仅 aarch64 架构有实际实现，其他架构为空操作
 #[cfg(target_arch = "aarch64")]
+use super::state::ModuleInfo;
+#[cfg(target_arch = "aarch64")]
 use crate::errno::Errno;
 use std::ffi::{CStr, c_char};
-#[cfg(target_arch = "aarch64")]
-use super::state::ModuleInfo;
 
 // Android O (API 26) 起引入 CFI，低于此版本无需处理
 const ANDROID_API_LEVEL_CFI_DISABLE: i32 = 26;

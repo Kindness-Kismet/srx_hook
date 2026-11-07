@@ -13,9 +13,9 @@ use std::time::Duration;
 use super::super::refresh;
 use super::super::state::GLOBAL;
 use super::super::state::{Task, TaskType};
-use crate::runtime::state::{MutexPoisonRecover, PidLocal};
-use crate::runtime::state::ProcessRuntime;
 use crate::runtime::fork;
+use crate::runtime::state::ProcessRuntime;
+use crate::runtime::state::{MutexPoisonRecover, PidLocal};
 mod poll;
 mod proxies;
 
@@ -103,7 +103,9 @@ pub(super) fn install_auto_loader_monitor_hooks() {
     let periodic_enabled = should_enable_periodic_fallback(use_loader_hooks);
     if !installation.update_flags(|flags| {
         flags.policy.store(policy, Ordering::Release);
-        flags.periodic_enabled.store(periodic_enabled, Ordering::Release);
+        flags
+            .periodic_enabled
+            .store(periodic_enabled, Ordering::Release);
     }) {
         return;
     }
@@ -135,7 +137,10 @@ impl Installation {
     // 同代 flags 与 clear 的状态版本串行发布，闭包只更新原子字段。
     fn update_flags(&self, update: impl FnOnce(&MonitorFlags)) -> bool {
         let source = self.runtime.snapshot();
-        if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic {
+        if source.clearing
+            || source.init.status != Errno::Ok
+            || source.init.mode != HookMode::Automatic
+        {
             return false;
         }
         let Some(_guard) = fork::try_publish() else {
@@ -166,7 +171,8 @@ fn reserve_installation() -> Option<Installation> {
     fork::check_management().ok()?;
     let runtime = &*GLOBAL;
     let source = runtime.snapshot();
-    if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic {
+    if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic
+    {
         return None;
     }
     let flags = flags();
@@ -415,7 +421,8 @@ pub(super) fn start_monitor_thread() {
     }
     let runtime = &*GLOBAL;
     let source = runtime.snapshot();
-    if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic {
+    if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic
+    {
         return;
     }
     let epoch = flags().epoch.load(Ordering::Acquire);
@@ -423,7 +430,9 @@ pub(super) fn start_monitor_thread() {
         let Some(_guard) = fork::try_publish() else {
             return;
         };
-        if !runtime.revision_matches(source.revision) || flags().epoch.load(Ordering::Acquire) != epoch {
+        if !runtime.revision_matches(source.revision)
+            || flags().epoch.load(Ordering::Acquire) != epoch
+        {
             return;
         }
         if runtime

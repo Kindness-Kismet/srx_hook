@@ -13,22 +13,34 @@ use std::sync::atomic::Ordering;
 
 // 注册 hook 任务：分配 stub、立即应用、记录结果，自动模式下唤醒 monitor
 pub(super) fn add_task(task: Task) -> Option<HookStub> {
-    add_task_checked(task).or_else(|error| error.stub.ok_or(error)).ok()
+    add_task_checked(task)
+        .or_else(|error| error.stub.ok_or(error))
+        .ok()
 }
 
 pub(super) fn add_task_checked(task: Task) -> Result<HookStub, crate::api::HookError> {
     register_task(task, None)
 }
 
-pub(super) fn add_monitor_task(task: Task, installation: &monitor::Installation) -> Option<HookStub> {
-    register_task(task, Some(installation)).or_else(|error| error.stub.ok_or(error)).ok()
+pub(super) fn add_monitor_task(
+    task: Task,
+    installation: &monitor::Installation,
+) -> Option<HookStub> {
+    register_task(task, Some(installation))
+        .or_else(|error| error.stub.ok_or(error))
+        .ok()
 }
 
-fn register_task(mut task: Task, installation: Option<&monitor::Installation>) -> Result<HookStub, crate::api::HookError> {
+fn register_task(
+    mut task: Task,
+    installation: Option<&monitor::Installation>,
+) -> Result<HookStub, crate::api::HookError> {
     fork::check_management()?;
     let runtime = &*GLOBAL;
     let source = runtime.snapshot();
-    if installation.is_some_and(|owner| !owner.is_current() || source.init.mode != HookMode::Automatic) {
+    if installation
+        .is_some_and(|owner| !owner.is_current() || source.init.mode != HookMode::Automatic)
+    {
         return Err(Errno::Busy.into());
     }
     if source.clearing {
@@ -87,7 +99,9 @@ fn register_task(mut task: Task, installation: Option<&monitor::Installation>) -
     }
     let result = super::transaction::run(runtime, false, |source| {
         // epoch 校验使用本轮快照，clear 发布的新版本由 commit 再次核对。
-        if source.init.mode != HookMode::Automatic || installation.is_some_and(|owner| !owner.is_current()) {
+        if source.init.mode != HookMode::Automatic
+            || installation.is_some_and(|owner| !owner.is_current())
+        {
             return Err(Errno::Busy);
         }
         let mut state = source.clone();
@@ -122,8 +136,15 @@ fn register_task(mut task: Task, installation: Option<&monitor::Installation>) -
     monitor::install_auto_loader_monitor_hooks();
     invoke_callbacks(result.events);
     if result.status != Errno::Ok && result.status != Errno::NoSym {
-        log::warn(format_args!("hook task {} apply status {:?}", stub, result.status));
-        return Err(crate::api::HookError { status: result.status, stub: Some(stub), errors: result.errors });
+        log::warn(format_args!(
+            "hook task {} apply status {:?}",
+            stub, result.status
+        ));
+        return Err(crate::api::HookError {
+            status: result.status,
+            stub: Some(stub),
+            errors: result.errors,
+        });
     }
     Ok(stub)
 }

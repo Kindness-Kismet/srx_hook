@@ -36,7 +36,9 @@ pub(super) fn global_patch_addresses(modules: &[ModuleInfo]) -> Result<Vec<usize
         return Err(Errno::InitErrCfi);
     }
     if diagnostic.is_empty() {
-        log::warn(format_args!("cfi slowpath diag symbol missing, patched slowpath only"));
+        log::warn(format_args!(
+            "cfi slowpath diag symbol missing, patched slowpath only"
+        ));
     }
     slowpath.extend(diagnostic);
     Ok(slowpath.into_iter().collect())

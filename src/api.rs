@@ -14,7 +14,11 @@ pub struct HookError {
 
 impl From<Errno> for HookError {
     fn from(status: Errno) -> Self {
-        Self { status, stub: None, errors: Vec::new() }
+        Self {
+            status,
+            stub: None,
+            errors: Vec::new(),
+        }
     }
 }
 
@@ -149,7 +153,16 @@ pub fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_single_checked(
+        caller_path_name,
+        callee_path_name,
+        sym_name,
+        new_func,
+        hooked,
+        hooked_arg,
+    )
+    .or_else(|error| error.stub.ok_or(error))
+    .ok()
 }
 
 pub fn hook_single_checked(
@@ -184,7 +197,17 @@ pub fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_partial_checked(
+        caller_allow_filter,
+        caller_allow_filter_arg,
+        callee_path_name,
+        sym_name,
+        new_func,
+        hooked,
+        hooked_arg,
+    )
+    .or_else(|error| error.stub.ok_or(error))
+    .ok()
 }
 
 pub fn hook_partial_checked(
@@ -219,7 +242,9 @@ pub fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+        .or_else(|error| error.stub.ok_or(error))
+        .ok()
 }
 
 pub fn hook_all_checked(
@@ -297,9 +322,15 @@ pub fn clear() {
 }
 
 pub fn clear_checked() -> Result<ClearReport, ClearError> {
-    runtime::check_management().map_err(|status| ClearError { status, report: ClearReport::default() })?;
+    runtime::check_management().map_err(|status| ClearError {
+        status,
+        report: ClearReport::default(),
+    })?;
     if in_external_callback() {
-        return Err(ClearError { status: Errno::InitErrSafe, report: ClearReport::default() });
+        return Err(ClearError {
+            status: Errno::InitErrSafe,
+            report: ClearReport::default(),
+        });
     }
     runtime::clear_checked()
 }

@@ -12,9 +12,9 @@ mod ops;
 mod prepare;
 mod transaction;
 
-pub(super) use prepare::{prepare_clear, prepare_refresh, prepare_unhook};
 #[cfg(target_arch = "aarch64")]
 pub(super) use prepare::prepare_cfi_init;
+pub(super) use prepare::{prepare_clear, prepare_refresh, prepare_unhook};
 pub(super) use transaction::PreparedRefresh;
 
 pub(super) struct CallbackEvent {
