@@ -5,9 +5,8 @@ use std::ffi::c_void;
 
 use super::super::refresh::{self};
 use super::super::state::{AllowFilterEntry, GLOBAL, HookedEntry, Task, TaskType};
-use super::process;
-use super::{add_task, invoke_callbacks};
-use crate::runtime::state::{MutexPoisonRecover, RwLockPoisonRecover};
+use super::invoke_callbacks;
+use crate::runtime::fork;
 
 pub(super) fn hook_single(
     caller_path_name: &str,
@@ -17,8 +16,20 @@ pub(super) fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
+    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(super) fn hook_single_checked(
+    caller_path_name: &str,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    fork::check_management()?;
     if caller_path_name.is_empty() || sym_name.is_empty() || new_func.is_null() {
-        return None;
+        return Err(Errno::InvalidArg.into());
     }
     let task = Task {
         stub: 0,
@@ -33,7 +44,7 @@ pub(super) fn hook_single(
             arg: hooked_arg as usize,
         }),
     };
-    add_task(task)
+    super::task_ops::add_task_checked(task)
 }
 
 pub(super) fn hook_partial(
@@ -45,8 +56,21 @@ pub(super) fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
+    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(super) fn hook_partial_checked(
+    caller_allow_filter: CallerAllowFilter,
+    caller_allow_filter_arg: *mut c_void,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    fork::check_management()?;
     if sym_name.is_empty() || new_func.is_null() {
-        return None;
+        return Err(Errno::InvalidArg.into());
     }
     let task = Task {
         stub: 0,
@@ -64,7 +88,7 @@ pub(super) fn hook_partial(
             arg: hooked_arg as usize,
         }),
     };
-    add_task(task)
+    super::task_ops::add_task_checked(task)
 }
 
 pub(super) fn hook_all(
@@ -74,8 +98,19 @@ pub(super) fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(super) fn hook_all_checked(
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    fork::check_management()?;
     if sym_name.is_empty() || new_func.is_null() {
-        return None;
+        return Err(Errno::InvalidArg.into());
     }
     let task = Task {
         stub: 0,
@@ -90,33 +125,25 @@ pub(super) fn hook_all(
             arg: hooked_arg as usize,
         }),
     };
-    add_task(task)
+    super::task_ops::add_task_checked(task)
 }
 
-// unhook 需要持有 dlclose_lock 和 refresh_mutex 防止与 refresh 并发冲突
 pub(super) fn unhook(stub: HookStub) -> Errno {
     if stub == 0 {
         return Errno::InvalidArg;
     }
 
-    let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
-    let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
-    let mut state = GLOBAL.state.lock_or_poison();
-    if state.init.status != Errno::Ok {
-        return state.init.status;
+    if let Err(error) = fork::check_management() {
+        return error;
     }
-    process::ensure_process_context(&mut state);
-
-    if !state.tasks.contains_key(&stub) {
-        return Errno::InvalidArg;
-    }
-
-    let status = refresh::unhook_task(&mut state, stub);
-    super::super::record::add_unhook_record(&mut state, status.as_i32(), stub);
-    state.tasks.remove(&stub);
-    state.task_order.retain(|value| *value != stub);
-    state.task_slots.remove(&stub);
-    status
+    let runtime = &*GLOBAL;
+    let result = super::transaction::run(runtime, false, |state| {
+        let mut prepared = refresh::prepare_unhook(state, stub)?;
+        super::super::record::add_unhook_record(&mut prepared.draft, prepared.status.as_i32(), stub);
+        Ok(prepared)
+    });
+    invoke_callbacks(result.events);
+    result.status
 }
 
 pub(super) fn add_ignore(caller_path_name: &str) -> Errno {
@@ -124,16 +151,18 @@ pub(super) fn add_ignore(caller_path_name: &str) -> Errno {
         return Errno::InvalidArg;
     }
 
-    let mut state = GLOBAL.state.lock_or_poison();
-    if state
-        .ignore_callers
-        .iter()
-        .any(|value| value == caller_path_name)
-    {
-        return Errno::Ok;
+    if let Err(error) = fork::check_management() {
+        return error;
     }
-    state.ignore_callers.push(caller_path_name.to_string());
-    Errno::Ok
+    GLOBAL.update(|state| {
+        if state.clearing {
+            return Errno::Busy;
+        }
+        if !state.ignore_callers.iter().any(|value| value == caller_path_name) {
+            state.ignore_callers.push(caller_path_name.to_string());
+        }
+        Errno::Ok
+    })
 }
 
 // 通过 dlinfo 从 handle 解析模块身份信息并缓存到 hint 系统
@@ -141,6 +170,7 @@ pub(super) fn get_module_identity(handle: *mut c_void) -> Option<ModuleIdentity>
     if handle.is_null() {
         return None;
     }
+    fork::check_management().ok()?;
     let module = refresh::module_identity_from_handle(handle)?;
     refresh::observe_module_identity(&module);
     Some(ModuleIdentity {
@@ -158,6 +188,7 @@ pub(super) fn get_module_identity_with_symbol(
     if handle.is_null() || probe_symbol.is_empty() {
         return None;
     }
+    fork::check_management().ok()?;
     let module = refresh::module_identity_from_handle_with_symbol(handle, probe_symbol)?;
     refresh::observe_module_identity(&module);
     Some(ModuleIdentity {
@@ -169,15 +200,16 @@ pub(super) fn get_module_identity_with_symbol(
 }
 
 pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
-    let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
-    let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
-    let mut state = GLOBAL.state.lock_or_poison();
-    if state.init.status != Errno::Ok {
-        return (state.init.status, Vec::new());
+    if let Err(error) = fork::check_management() {
+        return (error, Vec::new());
     }
-    process::ensure_process_context(&mut state);
-    let (status, events, errors) = refresh::refresh_all(&mut state);
-    drop(state);
-    invoke_callbacks(events);
-    (status, errors)
+    let runtime = &*GLOBAL;
+    let result = super::transaction::run(runtime, false, |state| {
+        refresh::prepare_refresh(state, false, None)
+    });
+    invoke_callbacks(result.events);
+    if result.status == Errno::Ok && runtime.snapshot().init.mode == crate::api::HookMode::Automatic {
+        super::monitor::start_monitor_thread();
+    }
+    (result.status, result.errors)
 }

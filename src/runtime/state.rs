@@ -3,12 +3,15 @@ use crate::api::{
     CallerAllowFilter, HookMode, HookStub, HookedCallback, PostDlopenCallback, PreDlopenCallback,
 };
 use crate::errno::Errno;
-use once_cell::sync::Lazy;
-use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::thread::JoinHandle;
+use std::sync::{Mutex, MutexGuard};
+
+mod process_local;
+mod published;
+
+pub(crate) use process_local::PidLocal;
+pub(super) use published::{GLOBAL, ProcessRuntime};
 
 // 无锁的安装时 PID，用于检测 fork 子进程
 // fork 后子进程的 PID 与此值不同，可快速判断是否在 fork 子进程中
@@ -31,29 +34,14 @@ pub(crate) fn is_forked_child() -> bool {
     current_pid != install_pid
 }
 
-// Mutex/RwLock poison 恢复扩展，避免持锁线程 panic 后引发连锁 panic
+// 局部缓存锁保留 panic 后可读取的已构造状态。
 pub(crate) trait MutexPoisonRecover<T> {
     fn lock_or_poison(&self) -> MutexGuard<'_, T>;
-}
-
-pub(crate) trait RwLockPoisonRecover<T> {
-    fn read_or_poison(&self) -> RwLockReadGuard<'_, T>;
-    fn write_or_poison(&self) -> RwLockWriteGuard<'_, T>;
 }
 
 impl<T> MutexPoisonRecover<T> for Mutex<T> {
     fn lock_or_poison(&self) -> MutexGuard<'_, T> {
         self.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
-impl<T> RwLockPoisonRecover<T> for RwLock<T> {
-    fn read_or_poison(&self) -> RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn write_or_poison(&self) -> RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -148,6 +136,7 @@ pub(super) struct RecordEntry {
 }
 
 // 初始化状态，记录当前 hook 模式和初始化结果
+#[derive(Clone)]
 pub(super) struct InitInfo {
     pub(super) status: Errno,
     pub(super) mode: HookMode,
@@ -162,10 +151,22 @@ impl Default for InitInfo {
     }
 }
 
-// 核心可变状态，由 GlobalState::state 互斥锁保护
-#[derive(Default)]
+#[derive(Clone)]
+pub(super) struct PendingProtection {
+    pub(super) address: usize,
+    pub(super) length: usize,
+    pub(super) protection: u32,
+    pub(super) module: ModuleInfo,
+    pub(super) loader_epoch: (u64, u64),
+    pub(super) needs_restore: bool,
+}
+
+// 完整发布的配置与绑定状态；事务在独立副本上准备下一版本。
+#[derive(Clone, Default)]
 pub(super) struct CoreState {
     pub(super) process_id: usize,
+    pub(super) revision: u64,
+    pub(super) clearing: bool,
     // 自身模块加载基址，用于 memfd 匿名加载时按基址跳过 hook 自身
     pub(super) self_base_addr: usize,
     pub(super) init: InitInfo,
@@ -177,35 +178,11 @@ pub(super) struct CoreState {
     // stub -> 该任务已绑定的所有 slot
     pub(super) task_slots: BTreeMap<HookStub, BTreeSet<SlotKey>>,
     pub(super) slots: BTreeMap<SlotKey, SlotEntry>,
+    pub(super) pending_protections: Vec<PendingProtection>,
     pub(super) single_task_targets: BTreeMap<HookStub, String>,
     pub(super) ignore_callers: Vec<String>,
     pub(super) known_modules: BTreeSet<String>,
     pub(super) recordable: bool,
     pub(super) records: Vec<RecordEntry>,
     pub(super) dlopen_callbacks: Vec<DlopenCallbackEntry>,
-    // 待处理的 dlopen handle 队列，用于异步刷新
-    pub(super) pending_module_handles: VecDeque<usize>,
-    pub(super) pending_module_handle_set: BTreeSet<usize>,
-    pub(super) refresh_requested: bool,
-    pub(super) monitor_running: bool,
-    pub(super) monitor_thread: Option<JoinHandle<()>>,
 }
-
-// 全局同步容器：state 保护核心状态，refresh_mutex 串行化 refresh
-// dlclose_lock 在 dlclose 期间阻止 slot 写入
-pub(super) struct GlobalState {
-    pub(super) state: Mutex<CoreState>,
-    pub(super) refresh_mutex: Mutex<()>,
-    pub(super) dlclose_lock: RwLock<()>,
-    pub(super) condvar: Condvar,
-}
-
-pub(super) static GLOBAL: Lazy<GlobalState> = Lazy::new(|| GlobalState {
-    state: Mutex::new(CoreState {
-        next_stub: 1,
-        ..CoreState::default()
-    }),
-    refresh_mutex: Mutex::new(()),
-    dlclose_lock: RwLock::new(()),
-    condvar: Condvar::new(),
-});

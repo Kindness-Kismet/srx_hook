@@ -33,6 +33,9 @@ pub enum Errno {
     Oom = 28,              // 内存分配失败
     Dup = 29,              // 重复操作
     NotFound = 30,         // 未找到目标
+    Busy = 31,            // 发布或进程接管正在进行
+    ForkContextUnavailable = 32, // 子进程缺少可继续管理的 loader 上下文
+    ModuleLeaseUnavailable = 33, // 无法证明目标模块在提交期间保持有效
     Max = 255,             // 保留上界
     Unknown = 1001,        // 未知错误
     Invalid = 1002,        // 无效状态

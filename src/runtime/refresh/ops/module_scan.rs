@@ -14,7 +14,6 @@ const OBSERVED_INSTANCE_HINT_LIMIT: usize = 256;
 const OBSERVED_INSTANCE_NAMESPACE_LIMIT: usize = 512;
 const OBSERVED_PATH_NAMESPACE_LIMIT: usize = 512;
 const NOLOAD_NAMESPACE_HINT_LIMIT: usize = 512;
-const MAPS_CACHE_FORCE_REFRESH_INTERVAL: usize = 32;
 
 // ELF link_map 结构体，与 linker 内部布局一致
 #[repr(C)]
@@ -61,6 +60,7 @@ use resolve::{resolve_module_from_handle, resolve_module_from_handle_symbol};
 
 // 通过 dl_iterate_phdr 获取模块加载/卸载计数，仅需遍历第一个条目
 pub(super) fn module_epoch() -> Option<ModuleEpoch> {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     unsafe extern "C" fn iterate_cb(
         info: *mut libc::dl_phdr_info,
         _size: usize,
@@ -82,20 +82,6 @@ pub(super) fn module_epoch() -> Option<ModuleEpoch> {
     if ret == 0 { None } else { Some(epoch) }
 }
 
-pub(super) fn observe_module_handle(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    let Some(module) = resolve_module_from_handle(handle) else {
-        log::debug(format_args!(
-            "observe module handle failed, handle=0x{:x}",
-            handle as usize
-        ));
-        return;
-    };
-    observe_module_identity(&module);
-}
-
 // 记录模块身份到多级 hint 缓存（base -> identity / instance -> namespace / path -> namespace）
 pub(super) fn observe_module_identity(module: &ModuleInfo) {
     if module.base_addr == 0 {
@@ -112,6 +98,7 @@ pub(super) fn observe_module_identity(module: &ModuleInfo) {
     };
     let old_identity = hints.insert(module.base_addr, hint);
     trim_observed_instance_hints(&mut hints, module.base_addr);
+    drop(hints);
     if old_identity != Some(hint) {
         log::debug(format_args!(
             "observe module identity base=0x{:x} instance=0x{:x} namespace=0x{:x} path={}",
@@ -130,12 +117,14 @@ pub(super) fn observe_module_identity(module: &ModuleInfo) {
         let mut noload_hints = noload_namespace_hints().lock_or_poison();
         noload_hints.insert(key, module.namespace_id);
         trim_noload_namespace_hints(&mut noload_hints, key);
+        drop(noload_hints);
 
         observe_path_namespace_hint(module.pathname.as_str(), module.namespace_id);
     }
 }
 
 pub(super) fn module_identity_from_handle(handle: *mut c_void) -> Option<ModuleInfo> {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     resolve_module_from_handle(handle)
 }
 
@@ -143,6 +132,7 @@ pub(super) fn module_identity_from_handle_with_symbol(
     handle: *mut c_void,
     probe_symbol: &str,
 ) -> Option<ModuleInfo> {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     if handle.is_null() {
         return None;
     }
@@ -191,6 +181,7 @@ fn merge_module_identity(
 
 // 合并 phdr 和 maps 两种数据源，应用 hint 缓存补全 namespace_id
 pub(super) fn enumerate_modules() -> Vec<ModuleInfo> {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     let mut modules_by_base = BTreeMap::<usize, (ModuleInfo, bool)>::new();
     for module in enumerate_modules_phdr() {
         modules_by_base.insert(module.base_addr, (module, true));

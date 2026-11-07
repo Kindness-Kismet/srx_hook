@@ -1,7 +1,7 @@
 // 模块身份 hint 缓存，提供 base_addr / instance_id / pathname / noload 四级 namespace 解析
-use crate::runtime::state::MutexPoisonRecover;
+use crate::runtime::state::{MutexPoisonRecover, PidLocal};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use super::{
     ModuleInfo, NOLOAD_NAMESPACE_HINT_LIMIT, OBSERVED_INSTANCE_HINT_LIMIT,
@@ -9,26 +9,27 @@ use super::{
 };
 
 pub(super) fn observed_identity_hints() -> &'static Mutex<BTreeMap<usize, ObservedIdentityHint>> {
-    static OBSERVED_HINTS: OnceLock<Mutex<BTreeMap<usize, ObservedIdentityHint>>> = OnceLock::new();
-    OBSERVED_HINTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    static OBSERVED_HINTS: PidLocal<Mutex<BTreeMap<usize, ObservedIdentityHint>>> =
+        PidLocal::new(|| Mutex::new(BTreeMap::new()));
+    OBSERVED_HINTS.get()
 }
 
 pub(super) fn observed_instance_namespace_hints() -> &'static Mutex<BTreeMap<usize, usize>> {
-    static OBSERVED_INSTANCE_NAMESPACE_HINTS: OnceLock<Mutex<BTreeMap<usize, usize>>> =
-        OnceLock::new();
-    OBSERVED_INSTANCE_NAMESPACE_HINTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    static OBSERVED_INSTANCE_NAMESPACE_HINTS: PidLocal<Mutex<BTreeMap<usize, usize>>> =
+        PidLocal::new(|| Mutex::new(BTreeMap::new()));
+    OBSERVED_INSTANCE_NAMESPACE_HINTS.get()
 }
 
 pub(super) fn observed_path_namespace_hints() -> &'static Mutex<BTreeMap<String, usize>> {
-    static OBSERVED_PATH_NAMESPACE_HINTS: OnceLock<Mutex<BTreeMap<String, usize>>> =
-        OnceLock::new();
-    OBSERVED_PATH_NAMESPACE_HINTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    static OBSERVED_PATH_NAMESPACE_HINTS: PidLocal<Mutex<BTreeMap<String, usize>>> =
+        PidLocal::new(|| Mutex::new(BTreeMap::new()));
+    OBSERVED_PATH_NAMESPACE_HINTS.get()
 }
 
 pub(super) fn noload_namespace_hints() -> &'static Mutex<BTreeMap<(usize, usize), usize>> {
-    static NOLOAD_NAMESPACE_HINTS: OnceLock<Mutex<BTreeMap<(usize, usize), usize>>> =
-        OnceLock::new();
-    NOLOAD_NAMESPACE_HINTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    static NOLOAD_NAMESPACE_HINTS: PidLocal<Mutex<BTreeMap<(usize, usize), usize>>> =
+        PidLocal::new(|| Mutex::new(BTreeMap::new()));
+    NOLOAD_NAMESPACE_HINTS.get()
 }
 
 pub(super) fn resolve_namespace_id_by_base(base_addr: usize) -> Option<usize> {
@@ -210,8 +211,12 @@ pub(super) fn module_noload_key(module: &ModuleInfo) -> (usize, usize) {
 }
 
 pub(super) fn apply_observed_instance_hints(modules: &mut [(ModuleInfo, bool)]) {
-    let mut hints = observed_identity_hints().lock_or_poison();
+    let mut hints = observed_identity_hints().lock_or_poison().clone();
     apply_instance_hints(modules, &mut hints);
+    let alive: BTreeSet<usize> = modules.iter().map(|(module, _)| module.base_addr).collect();
+    observed_identity_hints()
+        .lock_or_poison()
+        .retain(|base, _| alive.contains(base));
 }
 
 // 将 hint 缓存应用到模块列表，按优先级依次尝试多种 namespace 解析策略
@@ -247,7 +252,7 @@ pub(super) fn apply_instance_hints(
         .retain(|path, _| alive_paths.contains(path));
 
     let dlinfo = super::resolve::resolve_dlinfo_fn();
-    let instance_namespaces = observed_instance_namespace_hints().lock_or_poison();
+    let instance_namespaces = observed_instance_namespace_hints().lock_or_poison().clone();
     for (module, from_phdr) in modules {
         let Some(identity) = hints.get(&module.base_addr).copied() else {
             if module.namespace_id == 0

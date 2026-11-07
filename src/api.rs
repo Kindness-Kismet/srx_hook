@@ -5,6 +5,34 @@ use std::ffi::{c_char, c_void};
 // hook 任务的唯一标识，由运行时分配
 pub type HookStub = u64;
 
+#[derive(Debug)]
+pub struct HookError {
+    pub status: Errno,
+    pub stub: Option<HookStub>,
+    pub errors: Vec<RefreshError>,
+}
+
+impl From<Errno> for HookError {
+    fn from(status: Errno) -> Self {
+        Self { status, stub: None, errors: Vec::new() }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ClearReport {
+    pub revision: u64,
+    pub removed_slots: usize,
+    pub remaining_slots: usize,
+    pub remaining_protections: usize,
+    pub errors: Vec<RefreshError>,
+}
+
+#[derive(Debug)]
+pub struct ClearError {
+    pub status: Errno,
+    pub report: ClearReport,
+}
+
 // refresh 中单个模块的错误详情，用于诊断 ELF 解析失败等问题
 #[derive(Debug)]
 pub struct RefreshError {
@@ -103,6 +131,9 @@ pub fn is_forked_child() -> bool {
 
 // 初始化 hook 运行时，只能调用一次
 pub fn init(mode: HookMode, debug: bool) -> Errno {
+    if let Err(error) = runtime::check_management() {
+        return error;
+    }
     if in_external_callback() {
         return Errno::InitErrSafe;
     }
@@ -118,10 +149,22 @@ pub fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
+    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub fn hook_single_checked(
+    caller_path_name: &str,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    runtime::check_management()?;
     if in_external_callback() {
-        return None;
+        return Err(Errno::InitErrSafe.into());
     }
-    runtime::hook_single(
+    runtime::hook_single_checked(
         caller_path_name,
         callee_path_name,
         sym_name,
@@ -141,10 +184,23 @@ pub fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
+    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub fn hook_partial_checked(
+    caller_allow_filter: CallerAllowFilter,
+    caller_allow_filter_arg: *mut c_void,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    runtime::check_management()?;
     if in_external_callback() {
-        return None;
+        return Err(Errno::InitErrSafe.into());
     }
-    runtime::hook_partial(
+    runtime::hook_partial_checked(
         caller_allow_filter,
         caller_allow_filter_arg,
         callee_path_name,
@@ -163,14 +219,28 @@ pub fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    if in_external_callback() {
-        return None;
-    }
-    runtime::hook_all(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
 }
 
-// 卸载指定 hook 任务，同一调用点的其他任务不受影响
+pub fn hook_all_checked(
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    runtime::check_management()?;
+    if in_external_callback() {
+        return Err(Errno::InitErrSafe.into());
+    }
+    runtime::hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+}
+
+// 卸载指定 hook 任务，保留同一调用点的其余任务。
 pub fn unhook(stub: HookStub) -> Errno {
+    if let Err(error) = runtime::check_management() {
+        return error;
+    }
     if in_external_callback() {
         return Errno::InitErrSafe;
     }
@@ -179,6 +249,9 @@ pub fn unhook(stub: HookStub) -> Errno {
 
 // 将指定 caller 路径加入忽略列表，后续 hook 跳过该模块
 pub fn add_ignore(caller_path_name: &str) -> Errno {
+    if let Err(error) = runtime::check_management() {
+        return error;
+    }
     if in_external_callback() {
         return Errno::InitErrSafe;
     }
@@ -187,18 +260,18 @@ pub fn add_ignore(caller_path_name: &str) -> Errno {
 
 // 从 dlopen 句柄获取模块实例标识
 pub fn get_module_identity(handle: *mut c_void) -> Option<ModuleIdentity> {
-    if in_external_callback() {
+    if runtime::check_management().is_err() || in_external_callback() {
         return None;
     }
     runtime::get_module_identity(handle)
 }
 
-// 从 dlopen 句柄获取模块标识，dlinfo 不可用时回退到符号探测
+// 从 dlopen 句柄获取模块标识，dlinfo 解析失败时使用符号探测。
 pub fn get_module_identity_with_symbol(
     handle: *mut c_void,
     probe_symbol: &str,
 ) -> Option<ModuleIdentity> {
-    if in_external_callback() {
+    if runtime::check_management().is_err() || in_external_callback() {
         return None;
     }
     runtime::get_module_identity_with_symbol(handle, probe_symbol)
@@ -206,6 +279,9 @@ pub fn get_module_identity_with_symbol(
 
 // 手动模式下触发一次全量刷新，将待生效的 hook 应用到已加载模块
 pub fn refresh() -> (Errno, Vec<RefreshError>) {
+    if let Err(error) = runtime::check_management() {
+        return (error, Vec::new());
+    }
     if in_external_callback() {
         return (Errno::InitErrSafe, Vec::new());
     }
@@ -214,10 +290,22 @@ pub fn refresh() -> (Errno, Vec<RefreshError>) {
 
 // 清除所有 hook 任务并重置运行时状态
 pub fn clear() {
-    if in_external_callback() {
+    if runtime::check_management().is_err() || in_external_callback() {
         return;
     }
     runtime::clear();
+}
+
+pub fn clear_checked() -> Result<ClearReport, ClearError> {
+    runtime::check_management().map_err(|status| ClearError { status, report: ClearReport::default() })?;
+    if in_external_callback() {
+        return Err(ClearError { status: Errno::InitErrSafe, report: ClearReport::default() });
+    }
+    runtime::clear_checked()
+}
+
+pub fn fork_safe() -> bool {
+    runtime::fork_safe()
 }
 
 pub fn get_mode() -> HookMode {
@@ -235,7 +323,7 @@ pub fn get_debug() -> bool {
 }
 
 pub fn set_debug(debug: bool) {
-    if in_external_callback() {
+    if runtime::check_management().is_err() || in_external_callback() {
         return;
     }
     runtime::set_debug(debug);
@@ -249,7 +337,7 @@ pub fn get_recordable() -> bool {
 }
 
 pub fn set_recordable(recordable: bool) {
-    if in_external_callback() {
+    if runtime::check_management().is_err() || in_external_callback() {
         return;
     }
     runtime::set_recordable(recordable);
@@ -265,6 +353,9 @@ pub fn get_records(item_flags: u32) -> Option<String> {
 
 // 按字段掩码将操作记录写入文件描述符
 pub fn dump_records(fd: i32, item_flags: u32) -> Errno {
+    if let Err(error) = runtime::check_management() {
+        return error;
+    }
     if in_external_callback() {
         return Errno::InitErrSafe;
     }
@@ -277,7 +368,7 @@ pub fn enable_debug(debug: bool) {
 
 // 启用或禁用 SIGSEGV/SIGBUS 信号保护
 pub fn enable_sigsegv_protection(flag: bool) {
-    if in_external_callback() {
+    if runtime::check_management().is_err() || in_external_callback() {
         return;
     }
     runtime::enable_sigsegv_protection(flag);
@@ -322,6 +413,9 @@ pub fn add_dlopen_callback(
     post: Option<PostDlopenCallback>,
     data: *mut c_void,
 ) -> Errno {
+    if let Err(error) = runtime::check_management() {
+        return error;
+    }
     if in_external_callback() {
         return Errno::InitErrSafe;
     }
@@ -334,6 +428,9 @@ pub fn del_dlopen_callback(
     post: Option<PostDlopenCallback>,
     data: *mut c_void,
 ) -> Errno {
+    if let Err(error) = runtime::check_management() {
+        return error;
+    }
     if in_external_callback() {
         return Errno::InitErrSafe;
     }

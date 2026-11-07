@@ -1,19 +1,15 @@
 // CFI (Control Flow Integrity) 绕过模块，负责禁用 Android 的 CFI slowpath 检查
 // 仅 aarch64 架构有实际实现，其他架构为空操作
-use crate::elf;
+#[cfg(target_arch = "aarch64")]
 use crate::errno::Errno;
 use std::ffi::{CStr, c_char};
-use std::sync::OnceLock;
-
+#[cfg(target_arch = "aarch64")]
 use super::state::ModuleInfo;
 
 // Android O (API 26) 起引入 CFI，低于此版本无需处理
 const ANDROID_API_LEVEL_CFI_DISABLE: i32 = 26;
 const SYSTEM_PROP_VALUE_MAX: usize = 92;
 const RTLD_NEXT_FALLBACK: *mut libc::c_void = (-1isize) as *mut libc::c_void;
-
-// 全局初始化一次的 CFI 禁用结果缓存
-static CFI_DISABLE_STATUS: OnceLock<Errno> = OnceLock::new();
 
 unsafe extern "C" {
     fn __system_property_get(name: *const c_char, value: *mut c_char) -> libc::c_int;
@@ -24,59 +20,28 @@ mod module_hook;
 #[cfg(target_arch = "aarch64")]
 mod slowpath;
 
-pub(super) fn disable_slowpath() -> Errno {
-    *CFI_DISABLE_STATUS.get_or_init(disable_slowpath_impl)
-}
-
-pub(super) fn refresh_slowpath_patch() -> Errno {
-    refresh_slowpath_patch_impl()
-}
-
-pub(super) fn ensure_module_cfi_hook(module: &ModuleInfo, elf: &elf::Elf) -> Errno {
-    ensure_module_cfi_hook_impl(module, elf)
-}
-
-pub(super) fn retain_module_cfi_hook_state(modules: &[ModuleInfo]) {
-    retain_module_cfi_hook_state_impl(modules)
-}
-
 #[cfg(target_arch = "aarch64")]
-fn disable_slowpath_impl() -> Errno {
-    slowpath::disable_slowpath_impl()
-}
+pub(super) const RET_INSTRUCTION: u32 = 0xd65f03c0;
 
+// 调用方持有 Bionic 模块租期，补丁由统一事务提交。
 #[cfg(target_arch = "aarch64")]
-fn refresh_slowpath_patch_impl() -> Errno {
-    slowpath::refresh_slowpath_patch_impl()
+pub(super) fn global_patch_addresses(modules: &[ModuleInfo]) -> Result<Vec<usize>, Errno> {
+    if android_api_level() < ANDROID_API_LEVEL_CFI_DISABLE {
+        return Ok(Vec::new());
+    }
+    slowpath::global_patch_addresses(modules)
 }
 
-#[cfg(target_arch = "aarch64")]
-fn ensure_module_cfi_hook_impl(module: &ModuleInfo, elf: &elf::Elf) -> Errno {
-    module_hook::ensure_module_cfi_hook_impl(module, elf)
+pub(super) fn module_proxy_addresses() -> Option<(usize, usize)> {
+    #[cfg(target_arch = "aarch64")]
+    {
+        Some(module_hook::proxy_addresses())
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        None
+    }
 }
-
-#[cfg(target_arch = "aarch64")]
-fn retain_module_cfi_hook_state_impl(modules: &[ModuleInfo]) {
-    module_hook::retain_module_cfi_hook_state_impl(modules)
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn disable_slowpath_impl() -> Errno {
-    Errno::Ok
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn refresh_slowpath_patch_impl() -> Errno {
-    Errno::Ok
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn ensure_module_cfi_hook_impl(_module: &ModuleInfo, _elf: &elf::Elf) -> Errno {
-    Errno::Ok
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn retain_module_cfi_hook_state_impl(_modules: &[ModuleInfo]) {}
 
 fn android_api_level() -> i32 {
     let prop_name = c"ro.build.version.sdk";

@@ -1,5 +1,6 @@
 // dlopen/dlclose 监控模块，自动检测动态库加载卸载并触发 hook 刷新
 // 支持 loader hook (API >= 26) 和 legacy hook 两种策略，可自动降级
+use crate::api::HookMode;
 use crate::errno::Errno;
 use crate::log;
 use std::env;
@@ -12,22 +13,46 @@ use std::time::Duration;
 use super::super::refresh;
 use super::super::state::GLOBAL;
 use super::super::state::{Task, TaskType};
-use crate::runtime::state::MutexPoisonRecover;
+use crate::runtime::state::{MutexPoisonRecover, PidLocal};
+use crate::runtime::state::ProcessRuntime;
+use crate::runtime::fork;
 mod poll;
 mod proxies;
 
-// 原子标志：monitor hook 是否已安装
-static AUTO_MONITOR_INSTALLED: AtomicBool = AtomicBool::new(false);
-// 是否启用周期性轮询刷新
-static MONITOR_PERIODIC_ENABLED: AtomicBool = AtomicBool::new(true);
-// 是否因 loader 调用失败而升级到周期性轮询
-static MONITOR_PERIODIC_ESCALATED: AtomicBool = AtomicBool::new(false);
-// loader 调用连续成功计数，用于判断是否可以降级回纯事件模式
-static MONITOR_LOADER_SUCCESS_STREAK: AtomicUsize = AtomicUsize::new(0);
-// legacy hook 是否已安装
-static MONITOR_LEGACY_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
-// 是否有待处理的 legacy hook 安装请求
-static MONITOR_LEGACY_HOOK_REQUESTED: AtomicBool = AtomicBool::new(false);
+struct MonitorFlags {
+    installed: AtomicBool,
+    installing: AtomicUsize,
+    periodic_enabled: AtomicBool,
+    periodic_escalated: AtomicBool,
+    success_streak: AtomicUsize,
+    legacy_installed: AtomicBool,
+    legacy_requested: AtomicBool,
+    policy: AtomicUsize,
+    epoch: AtomicUsize,
+}
+
+impl MonitorFlags {
+    fn new() -> Self {
+        Self {
+            installed: AtomicBool::new(false),
+            installing: AtomicUsize::new(0),
+            periodic_enabled: AtomicBool::new(true),
+            periodic_escalated: AtomicBool::new(false),
+            success_streak: AtomicUsize::new(0),
+            legacy_installed: AtomicBool::new(false),
+            legacy_requested: AtomicBool::new(false),
+            policy: AtomicUsize::new(0),
+            epoch: AtomicUsize::new(1),
+        }
+    }
+}
+
+static MONITOR_FLAGS: PidLocal<MonitorFlags> = PidLocal::new(MonitorFlags::new);
+
+fn flags() -> &'static MonitorFlags {
+    MONITOR_FLAGS.get()
+}
+
 const RTLD_NEXT_FALLBACK: *mut c_void = (-1isize) as *mut c_void;
 const ANDROID_API_LEVEL_N: i32 = 24;
 const ANDROID_API_LEVEL_N_MR1: i32 = 25;
@@ -52,49 +77,127 @@ unsafe extern "C" {
 }
 
 pub(super) fn reset_auto_monitor_installed() {
-    AUTO_MONITOR_INSTALLED.store(false, Ordering::SeqCst);
-    MONITOR_PERIODIC_ESCALATED.store(false, Ordering::SeqCst);
-    MONITOR_LOADER_SUCCESS_STREAK.store(0, Ordering::SeqCst);
-    MONITOR_LEGACY_HOOK_INSTALLED.store(false, Ordering::SeqCst);
-    MONITOR_LEGACY_HOOK_REQUESTED.store(false, Ordering::SeqCst);
-    MONITOR_PERIODIC_ENABLED.store(should_enable_periodic_fallback(false), Ordering::SeqCst);
+    flags().epoch.fetch_add(1, Ordering::AcqRel);
+    flags().installing.store(0, Ordering::Release);
+    flags().installed.store(false, Ordering::SeqCst);
+    flags().periodic_escalated.store(false, Ordering::SeqCst);
+    flags().success_streak.store(0, Ordering::SeqCst);
+    flags().legacy_installed.store(false, Ordering::SeqCst);
+    flags().legacy_requested.store(false, Ordering::SeqCst);
+    flags().periodic_enabled.store(true, Ordering::SeqCst);
 }
 
 pub(super) fn install_auto_loader_monitor_hooks() {
-    if AUTO_MONITOR_INSTALLED.swap(true, Ordering::SeqCst) {
+    if flags().installed.load(Ordering::Acquire) {
         return;
     }
-
+    let Some(installation) = reserve_installation() else {
+        return;
+    };
     let use_loader_hooks = should_use_loader_hooks();
-    MONITOR_PERIODIC_ENABLED.store(
-        should_enable_periodic_fallback(use_loader_hooks),
-        Ordering::SeqCst,
-    );
-    MONITOR_LEGACY_HOOK_INSTALLED.store(false, Ordering::SeqCst);
-    MONITOR_LEGACY_HOOK_REQUESTED.store(false, Ordering::SeqCst);
-    if use_loader_hooks {
-        install_loader_hooks_for_libdl();
+    let policy = match periodic_policy_from_env() {
+        PeriodicPolicy::Auto => 0,
+        PeriodicPolicy::Force(false) => 1,
+        PeriodicPolicy::Force(true) => 2,
+    };
+    let periodic_enabled = should_enable_periodic_fallback(use_loader_hooks);
+    if !installation.update_flags(|flags| {
+        flags.policy.store(policy, Ordering::Release);
+        flags.periodic_enabled.store(periodic_enabled, Ordering::Release);
+    }) {
         return;
     }
+    let complete = if use_loader_hooks {
+        install_loader_hooks_for_libdl(&installation)
+    } else {
+        install_legacy_hooks_for_all_modules(&installation)
+    };
+    installation.update_flags(|flags| {
+        flags.installed.store(complete, Ordering::Release);
+        if !use_loader_hooks {
+            flags.legacy_installed.store(complete, Ordering::Release);
+        }
+    });
+}
 
-    install_legacy_hooks_for_all_modules();
+pub(super) struct Installation {
+    pid: libc::pid_t,
+    epoch: usize,
+    runtime: &'static ProcessRuntime,
+    flags: &'static MonitorFlags,
+}
+
+impl Installation {
+    pub(super) fn is_current(&self) -> bool {
+        self.runtime.is_current() && self.flags.epoch.load(Ordering::Acquire) == self.epoch
+    }
+
+    // 同代 flags 与 clear 的状态版本串行发布，闭包只更新原子字段。
+    fn update_flags(&self, update: impl FnOnce(&MonitorFlags)) -> bool {
+        let source = self.runtime.snapshot();
+        if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic {
+            return false;
+        }
+        let Some(_guard) = fork::try_publish() else {
+            return false;
+        };
+        if !self.is_current() || !self.runtime.revision_matches(source.revision) {
+            return false;
+        }
+        update(self.flags);
+        true
+    }
+}
+
+impl Drop for Installation {
+    fn drop(&mut self) {
+        if self.pid == unsafe { libc::getpid() } {
+            let _ = self.flags.installing.compare_exchange(
+                self.epoch,
+                0,
+                Ordering::Release,
+                Ordering::Relaxed,
+            );
+        }
+    }
+}
+
+fn reserve_installation() -> Option<Installation> {
+    fork::check_management().ok()?;
+    let runtime = &*GLOBAL;
+    let source = runtime.snapshot();
+    if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic {
+        return None;
+    }
+    let flags = flags();
+    let epoch = flags.epoch.load(Ordering::Acquire);
+    flags
+        .installing
+        .compare_exchange(0, epoch, Ordering::AcqRel, Ordering::Acquire)
+        .ok()?;
+    Some(Installation {
+        pid: unsafe { libc::getpid() },
+        epoch,
+        runtime,
+        flags,
+    })
 }
 
 // loader 调用回退时触发：重置成功计数、请求安装 legacy hook、升级到周期性轮询
 pub(super) fn note_loader_call_fallback(reason: &str) {
-    if !AUTO_MONITOR_INSTALLED.load(Ordering::Acquire) {
+    if !flags().installed.load(Ordering::Acquire) {
         return;
     }
-    if !matches!(periodic_policy_from_env(), PeriodicPolicy::Auto) {
+    if flags().policy.load(Ordering::Acquire) != 0 {
         return;
     }
-    MONITOR_LOADER_SUCCESS_STREAK.store(0, Ordering::SeqCst);
+    flags().success_streak.store(0, Ordering::SeqCst);
     request_legacy_hooks_install(reason);
-    if MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) {
+    if flags().periodic_enabled.load(Ordering::Acquire) {
         return;
     }
-    MONITOR_PERIODIC_ENABLED.store(true, Ordering::SeqCst);
-    let first_escalation = !MONITOR_PERIODIC_ESCALATED.swap(true, Ordering::SeqCst);
+    flags().periodic_enabled.store(true, Ordering::SeqCst);
+    let first_escalation = !flags().periodic_escalated.swap(true, Ordering::SeqCst);
     if first_escalation {
         log::warn(format_args!(
             "enable periodic monitor fallback due to loader fallback reason={}",
@@ -110,43 +213,51 @@ pub(super) fn note_loader_call_fallback(reason: &str) {
 
 // loader 调用成功时累计计数，达到阈值后降级回纯事件模式
 pub(super) fn note_loader_call_success() {
-    if !AUTO_MONITOR_INSTALLED.load(Ordering::Acquire) {
+    if !flags().installed.load(Ordering::Acquire) {
         return;
     }
-    if !matches!(periodic_policy_from_env(), PeriodicPolicy::Auto) {
+    if flags().policy.load(Ordering::Acquire) != 0 {
         return;
     }
-    if !MONITOR_PERIODIC_ESCALATED.load(Ordering::Acquire) {
+    if !flags().periodic_escalated.load(Ordering::Acquire) {
         return;
     }
 
-    let streak = MONITOR_LOADER_SUCCESS_STREAK
+    let streak = flags()
+        .success_streak
         .fetch_add(1, Ordering::AcqRel)
         .saturating_add(1);
     if streak < LOADER_STABLE_SUCCESS_THRESHOLD {
         return;
     }
 
-    MONITOR_LOADER_SUCCESS_STREAK.store(0, Ordering::SeqCst);
-    MONITOR_PERIODIC_ESCALATED.store(false, Ordering::SeqCst);
-    MONITOR_PERIODIC_ENABLED.store(false, Ordering::SeqCst);
+    flags().success_streak.store(0, Ordering::SeqCst);
+    flags().periodic_escalated.store(false, Ordering::SeqCst);
+    flags().periodic_enabled.store(false, Ordering::SeqCst);
     log::info(format_args!(
         "disable periodic monitor fallback after loader stabilized"
     ));
 }
 
 pub(super) fn maybe_install_legacy_hooks_on_demand() {
-    if !MONITOR_LEGACY_HOOK_REQUESTED.swap(false, Ordering::SeqCst) {
+    if !flags().legacy_requested.load(Ordering::Acquire) {
         return;
     }
-    install_legacy_hooks_for_all_modules();
+    let Some(installation) = reserve_installation() else {
+        return;
+    };
+    let complete = install_legacy_hooks_for_all_modules(&installation);
+    installation.update_flags(|flags| {
+        flags.legacy_requested.store(!complete, Ordering::Release);
+        flags.legacy_installed.store(complete, Ordering::Release);
+    });
 }
 
 fn request_legacy_hooks_install(reason: &str) {
-    if MONITOR_LEGACY_HOOK_INSTALLED.load(Ordering::Acquire) {
+    if flags().legacy_installed.load(Ordering::Acquire) {
         return;
     }
-    let first_request = !MONITOR_LEGACY_HOOK_REQUESTED.swap(true, Ordering::SeqCst);
+    let first_request = !flags().legacy_requested.swap(true, Ordering::SeqCst);
     if first_request {
         log::warn(format_args!(
             "request legacy monitor hooks install due to loader fallback reason={}",
@@ -181,9 +292,9 @@ fn parse_periodic_env_value(value: &str) -> Option<bool> {
 }
 
 // legacy 模式：对所有模块 hook dlopen/android_dlopen_ext/dlclose
-fn install_legacy_hooks_for_all_modules() {
-    if MONITOR_LEGACY_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
-        return;
+fn install_legacy_hooks_for_all_modules(installation: &Installation) -> bool {
+    if flags().legacy_installed.load(Ordering::Acquire) {
+        return true;
     }
     let legacy_hooks = [
         ("dlopen", proxies::monitor_dlopen as *mut c_void),
@@ -194,6 +305,7 @@ fn install_legacy_hooks_for_all_modules() {
         ("dlclose", proxies::monitor_dlclose as *mut c_void),
     ];
 
+    let mut complete = true;
     for &(symbol, proxy) in &legacy_hooks {
         let task = Task {
             stub: 0,
@@ -205,14 +317,13 @@ fn install_legacy_hooks_for_all_modules() {
             new_func: proxy as usize,
             hooked: None,
         };
-        let _ = super::add_task(task);
+        complete &= ensure_monitor_task(task, installation);
     }
-
-    log::info(format_args!("legacy monitor hooks installed"));
+    complete
 }
 
 // loader 模式：仅 hook libdl.so 中的 __loader_dlopen 等符号 (API >= 26)
-fn install_loader_hooks_for_libdl() {
+fn install_loader_hooks_for_libdl(installation: &Installation) -> bool {
     let loader_hooks = [
         (
             "__loader_dlopen",
@@ -228,6 +339,7 @@ fn install_loader_hooks_for_libdl() {
         ),
     ];
 
+    let mut complete = true;
     for &(symbol, proxy) in &loader_hooks {
         let task = Task {
             stub: 0,
@@ -239,11 +351,27 @@ fn install_loader_hooks_for_libdl() {
             new_func: proxy as usize,
             hooked: None,
         };
-        let _ = super::add_task(task);
+        complete &= ensure_monitor_task(task, installation);
     }
+    complete
+}
+
+fn ensure_monitor_task(task: Task, installation: &Installation) -> bool {
+    if !installation.is_current() {
+        return false;
+    }
+    if GLOBAL.snapshot().tasks.values().any(|existing| {
+        existing.new_func == task.new_func
+            && existing.sym_name == task.sym_name
+            && existing.caller_path_name == task.caller_path_name
+    }) {
+        return true;
+    }
+    super::task_ops::add_monitor_task(task, installation).is_some()
 }
 
 fn should_use_loader_hooks() -> bool {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     let api_level = android_api_level();
     if api_level < ANDROID_API_LEVEL_LOADER {
         return false;
@@ -282,19 +410,50 @@ fn android_api_level() -> i32 {
 }
 
 pub(super) fn start_monitor_thread() {
-    let mut state = GLOBAL.state.lock_or_poison();
-    if state.monitor_running {
+    if fork::check_management().is_err() {
         return;
     }
-    state.monitor_running = true;
-
+    let runtime = &*GLOBAL;
+    let source = runtime.snapshot();
+    if source.clearing || source.init.status != Errno::Ok || source.init.mode != HookMode::Automatic {
+        return;
+    }
+    let epoch = flags().epoch.load(Ordering::Acquire);
+    {
+        let Some(_guard) = fork::try_publish() else {
+            return;
+        };
+        if !runtime.revision_matches(source.revision) || flags().epoch.load(Ordering::Acquire) != epoch {
+            return;
+        }
+        if runtime
+            .monitor_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+    }
     let builder = thread::Builder::new().name("srx_hook_monitor".to_string());
-    let handle = builder.spawn(poll::monitor_loop);
-    match handle {
-        Ok(thread) => state.monitor_thread = Some(thread),
-        Err(_) => {
-            state.monitor_running = false;
-            state.init.status = Errno::InitErrDlMtr;
+    match builder.spawn(move || poll::monitor_loop(runtime, epoch)) {
+        Ok(handle) => {
+            let mut owner = runtime.monitor_thread.lock_or_poison();
+            if runtime.is_current()
+                && flags().epoch.load(Ordering::Acquire) == epoch
+                && runtime.monitor_running.load(Ordering::Acquire)
+            {
+                *owner = Some(handle);
+            }
+        }
+        Err(error) => {
+            if runtime.is_current() && flags().epoch.load(Ordering::Acquire) == epoch {
+                runtime.monitor_running.store(false, Ordering::Release);
+                let _ = runtime.update(|state| {
+                    state.init.status = Errno::InitErrDlMtr;
+                    Errno::Ok
+                });
+            }
+            log::warn(format_args!("monitor thread spawn failed: {error}"));
         }
     }
 }

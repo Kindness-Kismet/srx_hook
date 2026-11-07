@@ -4,7 +4,7 @@ use crate::errno::Errno;
 use std::ffi::{c_char, c_void};
 
 use super::super::state::{DlopenCallbackEntry, GLOBAL};
-use crate::runtime::state::MutexPoisonRecover;
+use crate::runtime::fork;
 
 pub(super) fn add_dlopen_callback(
     pre: Option<PreDlopenCallback>,
@@ -14,22 +14,27 @@ pub(super) fn add_dlopen_callback(
     if pre.is_none() && post.is_none() {
         return Errno::InvalidArg;
     }
-
-    let mut state = GLOBAL.state.lock_or_poison();
-    let data = data as usize;
-    if state
-        .dlopen_callbacks
-        .iter()
-        .any(|entry| is_same_dlopen_callback(entry, pre, post, data))
-    {
-        return Errno::Ok;
+    if let Err(status) = fork::check_management() {
+        return status;
     }
-    state.dlopen_callbacks.push(DlopenCallbackEntry {
-        pre,
-        post,
-        arg: data,
-    });
-    Errno::Ok
+    let data = data as usize;
+    GLOBAL.update(|draft| {
+        if draft.clearing {
+            return Errno::Busy;
+        }
+        if !draft
+            .dlopen_callbacks
+            .iter()
+            .any(|entry| is_same_dlopen_callback(entry, pre, post, data))
+        {
+            draft.dlopen_callbacks.push(DlopenCallbackEntry {
+                pre,
+                post,
+                arg: data,
+            });
+        }
+        Errno::Ok
+    })
 }
 
 pub(super) fn del_dlopen_callback(
@@ -40,21 +45,27 @@ pub(super) fn del_dlopen_callback(
     if pre.is_none() && post.is_none() {
         return Errno::InvalidArg;
     }
-
-    let mut state = GLOBAL.state.lock_or_poison();
+    if let Err(status) = fork::check_management() {
+        return status;
+    }
     let data = data as usize;
-    state
-        .dlopen_callbacks
-        .retain(|entry| !is_same_dlopen_callback(entry, pre, post, data));
-    Errno::Ok
+    GLOBAL.update(|draft| {
+        if draft.clearing {
+            return Errno::Busy;
+        }
+        draft
+            .dlopen_callbacks
+            .retain(|entry| !is_same_dlopen_callback(entry, pre, post, data));
+        Errno::Ok
+    })
 }
 
-// 先复制回调列表再释放锁，避免持锁期间调用外部回调导致死锁
+// 回调使用已复制的列表，执行前释放内部状态。
 pub(super) fn invoke_dlopen_callbacks_pre(filename: *const c_char) {
-    let callbacks = {
-        let state = GLOBAL.state.lock_or_poison();
-        state.dlopen_callbacks.clone()
-    };
+    if fork::check_management().is_err() {
+        return;
+    }
+    let callbacks = GLOBAL.snapshot().dlopen_callbacks.clone();
     for entry in callbacks {
         if let Some(pre) = entry.pre {
             unsafe {
@@ -65,10 +76,10 @@ pub(super) fn invoke_dlopen_callbacks_pre(filename: *const c_char) {
 }
 
 pub(super) fn invoke_dlopen_callbacks_post(filename: *const c_char, result: i32) {
-    let callbacks = {
-        let state = GLOBAL.state.lock_or_poison();
-        state.dlopen_callbacks.clone()
-    };
+    if fork::check_management().is_err() {
+        return;
+    }
+    let callbacks = GLOBAL.snapshot().dlopen_callbacks.clone();
     for entry in callbacks {
         if let Some(post) = entry.post {
             unsafe {

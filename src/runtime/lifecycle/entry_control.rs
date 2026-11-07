@@ -1,93 +1,212 @@
 // 运行时控制入口，提供 clear/debug/record/proxy 等控制操作的实现
 use crate::android::signal_guard;
-use crate::api::{HookMode, PostDlopenCallback, PreDlopenCallback};
+use crate::api::{
+    ClearError, ClearReport, HookMode, PostDlopenCallback, PreDlopenCallback, RefreshError,
+};
 use crate::errno::Errno;
 use std::ffi::{c_char, c_void};
+use std::sync::TryLockError;
+use std::sync::atomic::Ordering;
 
-use super::super::hub;
+use super::super::fork;
 use super::super::refresh;
-use super::super::state::GLOBAL;
+use super::super::state::{GLOBAL, ProcessRuntime};
 use super::dlopen_callbacks;
 use super::monitor;
 use super::proxy;
-use crate::runtime::state::{MutexPoisonRecover, RwLockPoisonRecover};
 
-// 完全重置运行时状态：停止 monitor 线程、恢复所有 hook、清空全部数据
+// 兼容入口仍保留明确失败信息，调用方需要结果时使用 clear_checked。
 pub(super) fn clear() {
-    let thread = {
-        let mut state = GLOBAL.state.lock_or_poison();
-        state.monitor_running = false;
-        GLOBAL.condvar.notify_all();
-        state.monitor_thread.take()
-    };
-
-    if let Some(handle) = thread {
-        let _ = handle.join();
+    if let Err(error) = clear_checked() {
+        crate::log::warn(format_args!(
+            "clear failed status={:?} revision={} removed={} remaining={} protections={} errors={}",
+            error.status,
+            error.report.revision,
+            error.report.removed_slots,
+            error.report.remaining_slots,
+            error.report.remaining_protections,
+            error.report.errors.len()
+        ));
     }
+}
 
-    let _dlclose_guard = GLOBAL.dlclose_lock.read_or_poison();
-    let _refresh_guard = GLOBAL.refresh_mutex.lock_or_poison();
-    let mut state = GLOBAL.state.lock_or_poison();
-    let _ = refresh::restore_all(&mut state);
-    state.tasks.clear();
-    state.task_order.clear();
-    state.task_slots.clear();
-    state.slots.clear();
-    state.single_task_targets.clear();
-    state.ignore_callers.clear();
-    state.known_modules.clear();
-    state.recordable = false;
-    state.records.clear();
-    state.dlopen_callbacks.clear();
-    state.pending_module_handles.clear();
-    state.pending_module_handle_set.clear();
-    state.refresh_requested = false;
-    state.process_id = 0;
-    state.init.status = Errno::Uninit;
-    state.init.mode = HookMode::Automatic;
-    state.next_stub = 1;
+pub(super) fn clear_checked() -> Result<ClearReport, ClearError> {
+    fork::check_management().map_err(|status| ClearError {
+        status,
+        report: ClearReport::default(),
+    })?;
+    let runtime = &*GLOBAL;
+    let initial = runtime.snapshot();
+    let before = initial.slots.len();
+    let marked = runtime.update(|draft| {
+        draft.clearing = true;
+        Errno::Ok
+    });
+    if marked != Errno::Ok {
+        return Err(clear_error(runtime, before, marked, Vec::new()));
+    }
+    stop_monitor(runtime).map_err(|status| clear_error(runtime, before, status, Vec::new()))?;
+    let source = runtime.snapshot();
+    let errors = if source.slots.is_empty()
+        && source
+            .pending_protections
+            .iter()
+            .all(|page| !page.needs_restore)
+    {
+        Vec::new()
+    } else {
+        let result = super::transaction::run(runtime, true, refresh::prepare_clear);
+        if result.status != Errno::Ok {
+            return Err(clear_error(runtime, before, result.status, result.errors));
+        }
+        if let Some(error) = result.errors.first() {
+            return Err(clear_error(runtime, before, error.errno, result.errors));
+        }
+        result.errors
+    };
+    let status = finish_clear(runtime);
+    if status != Errno::Ok {
+        return Err(clear_error(runtime, before, status, errors));
+    }
+    Ok(clear_report(runtime, before, errors))
+}
 
+fn stop_monitor(runtime: &ProcessRuntime) -> Result<(), Errno> {
     monitor::reset_auto_monitor_installed();
-    signal_guard::remove_handler();
-    proxy::clear_proxy_stack();
-    hub::clear_stack();
-    hub::collect_retired(true);
+    runtime.monitor_running.store(false, Ordering::Release);
+    runtime.refresh_requested.store(false, Ordering::Release);
+    let thread = {
+        let mut monitor = match runtime.monitor_thread.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(Errno::Busy),
+        };
+        monitor.take()
+    };
+    if let Some(handle) = thread {
+        handle.thread().unpark();
+        drop(handle);
+    }
+    Ok(())
+}
+
+fn finish_clear(runtime: &ProcessRuntime) -> Errno {
+    runtime.update(|draft| {
+        if !draft.slots.is_empty() {
+            return Errno::Busy;
+        }
+        if draft
+            .pending_protections
+            .iter()
+            .any(|page| page.needs_restore)
+        {
+            return Errno::SetProt;
+        }
+        draft.pending_protections.clear();
+        draft.tasks.clear();
+        draft.task_order.clear();
+        draft.task_slots.clear();
+        draft.single_task_targets.clear();
+        draft.ignore_callers.clear();
+        draft.known_modules.clear();
+        draft.recordable = false;
+        draft.records.clear();
+        draft.dlopen_callbacks.clear();
+        draft.init.status = Errno::Uninit;
+        draft.init.mode = HookMode::Automatic;
+        draft.next_stub = runtime.next_stub.load(Ordering::Acquire);
+        draft.clearing = false;
+        Errno::Ok
+    })
+}
+
+fn clear_report(runtime: &ProcessRuntime, before: usize, errors: Vec<RefreshError>) -> ClearReport {
+    let current = runtime.snapshot();
+    ClearReport {
+        revision: current.revision,
+        removed_slots: before.saturating_sub(current.slots.len()),
+        remaining_slots: current.slots.len(),
+        remaining_protections: current
+            .pending_protections
+            .iter()
+            .filter(|page| page.needs_restore)
+            .count(),
+        errors,
+    }
+}
+
+fn clear_error(
+    runtime: &ProcessRuntime,
+    before: usize,
+    status: Errno,
+    errors: Vec<RefreshError>,
+) -> ClearError {
+    ClearError {
+        status,
+        report: clear_report(runtime, before, errors),
+    }
 }
 
 pub(super) fn get_mode() -> HookMode {
-    let state = GLOBAL.state.lock_or_poison();
+    let state = GLOBAL.snapshot();
     state.init.mode
 }
 
 pub(super) fn get_debug() -> bool {
-    let state = GLOBAL.state.lock_or_poison();
+    let state = GLOBAL.snapshot();
     state.debug
 }
 
 pub(super) fn set_debug(debug: bool) {
-    let mut state = GLOBAL.state.lock_or_poison();
-    state.debug = debug;
-    crate::log::set_debug_enabled(debug);
+    if fork::check_management().is_err() {
+        return;
+    }
+    let status = GLOBAL.update(|draft| {
+        if draft.clearing {
+            return Errno::Busy;
+        }
+        draft.debug = debug;
+        Errno::Ok
+    });
+    if status == Errno::Ok {
+        crate::log::set_debug_enabled(debug);
+    } else if fork::check_management().is_ok() {
+        crate::log::warn(format_args!("set_debug failed status={status:?}"));
+    }
 }
 
 pub(super) fn get_recordable() -> bool {
-    let state = GLOBAL.state.lock_or_poison();
+    let state = GLOBAL.snapshot();
     state.recordable
 }
 
 pub(super) fn set_recordable(recordable: bool) {
-    let mut state = GLOBAL.state.lock_or_poison();
-    state.recordable = recordable;
+    if fork::check_management().is_err() {
+        return;
+    }
+    let status = GLOBAL.update(|draft| {
+        if draft.clearing {
+            return Errno::Busy;
+        }
+        draft.recordable = recordable;
+        Errno::Ok
+    });
+    if status != Errno::Ok && fork::check_management().is_ok() {
+        crate::log::warn(format_args!("set_recordable failed status={status:?}"));
+    }
 }
 
 pub(super) fn get_records(item_flags: u32) -> Option<String> {
-    let state = GLOBAL.state.lock_or_poison();
+    let state = GLOBAL.snapshot();
     super::super::record::get_records_text(&state, item_flags)
 }
 
 pub(super) fn dump_records(fd: i32, item_flags: u32) -> Errno {
+    if let Err(status) = fork::check_management() {
+        return status;
+    }
     let text = {
-        let state = GLOBAL.state.lock_or_poison();
+        let state = GLOBAL.snapshot();
         super::super::record::get_records_text(&state, item_flags)
     };
     let Some(text) = text else {
@@ -100,6 +219,9 @@ pub(super) fn dump_records(fd: i32, item_flags: u32) -> Errno {
 }
 
 pub(super) fn enable_sigsegv_protection(flag: bool) {
+    if fork::check_management().is_err() {
+        return;
+    }
     signal_guard::enable(flag);
 }
 

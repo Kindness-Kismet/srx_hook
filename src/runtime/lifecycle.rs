@@ -10,9 +10,9 @@ use std::ffi::{c_char, c_void};
 mod dlopen_callbacks;
 mod monitor;
 mod monitor_calls;
-mod process;
 mod proxy;
 mod task_ops;
+mod transaction;
 
 mod entry_control;
 mod entry_hook;
@@ -34,7 +34,18 @@ pub(super) fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    entry_hook::hook_single(
+    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(super) fn hook_single_checked(
+    caller_path_name: &str,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    entry_hook::hook_single_checked(
         caller_path_name,
         callee_path_name,
         sym_name,
@@ -53,7 +64,19 @@ pub(super) fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    entry_hook::hook_partial(
+    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(super) fn hook_partial_checked(
+    caller_allow_filter: CallerAllowFilter,
+    caller_allow_filter_arg: *mut c_void,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    entry_hook::hook_partial_checked(
         caller_allow_filter,
         caller_allow_filter_arg,
         callee_path_name,
@@ -71,7 +94,17 @@ pub(super) fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    entry_hook::hook_all(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(super) fn hook_all_checked(
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    entry_hook::hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
 }
 
 pub(super) fn unhook(stub: HookStub) -> Errno {
@@ -99,6 +132,10 @@ pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
 
 pub(super) fn clear() {
     entry_control::clear();
+}
+
+pub(super) fn clear_checked() -> Result<crate::api::ClearReport, crate::api::ClearError> {
+    entry_control::clear_checked()
 }
 
 pub(super) fn get_mode() -> HookMode {

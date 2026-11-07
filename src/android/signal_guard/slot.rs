@@ -1,5 +1,5 @@
 // 守卫 slot 的分配、查找与信号跳转逻辑
-// slot 按 tid 归属线程，支持静态数组 + 动态链表两级存储
+// slot 按 PID/TID 归属线程，支持静态数组 + 动态链表两级存储。
 
 use std::sync::atomic::Ordering;
 
@@ -9,10 +9,52 @@ use super::{
     SigchainCallbackFn, siglongjmp,
 };
 
+const CLAIMING: u64 = 1 << 63;
+
+fn current_owner(tid: usize) -> u64 {
+    ((unsafe { libc::getpid() } as u64) << 32) | tid as u64
+}
+
+// 认领标记隔离旧 env，子进程按 PID 回收父代槽。
+fn claim_slot(slot: &'static GuardSlot, owner: u64) -> bool {
+    let previous = slot.owner.load(Ordering::Acquire);
+    if previous != 0 && (previous & !CLAIMING) >> 32 == owner >> 32 {
+        return false;
+    }
+    if slot
+        .owner
+        .compare_exchange(
+            previous,
+            owner | CLAIMING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    slot.active.store(false, Ordering::Release);
+    slot.depth.store(0, Ordering::Release);
+    slot.reservations.store(0, Ordering::Release);
+    slot.last_signal.store(0, Ordering::Release);
+    slot.owner.store(owner, Ordering::Release);
+    true
+}
+
+pub(super) fn release_if_idle(slot: &GuardSlot) {
+    if slot.depth.load(Ordering::Acquire) != 0 || slot.reservations.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    slot.active.store(false, Ordering::Release);
+    slot.last_signal.store(0, Ordering::Release);
+    slot.owner.store(0, Ordering::Release);
+}
+
 // 在静态数组和动态链表中按 tid 查找已归属的 slot
 fn find_slot_by_tid(tid: usize) -> Option<&'static GuardSlot> {
+    let owner = current_owner(tid);
     for slot in &GUARD_BASE_SLOTS {
-        if slot.tid.load(Ordering::Acquire) == tid {
+        if slot.owner.load(Ordering::Acquire) == owner {
             return Some(slot);
         }
     }
@@ -20,7 +62,7 @@ fn find_slot_by_tid(tid: usize) -> Option<&'static GuardSlot> {
     let mut node = GUARD_EXTRA_HEAD.load(Ordering::Acquire);
     while !node.is_null() {
         let slot = unsafe { &(*node).slot };
-        if slot.tid.load(Ordering::Acquire) == tid {
+        if slot.owner.load(Ordering::Acquire) == owner {
             return Some(slot);
         }
         node = unsafe { (*node).next.load(Ordering::Acquire) };
@@ -30,8 +72,9 @@ fn find_slot_by_tid(tid: usize) -> Option<&'static GuardSlot> {
 
 // 查找 tid 对应的活跃 slot（active == true）
 fn find_active_slot_by_tid(tid: usize) -> Option<&'static GuardSlot> {
+    let owner = current_owner(tid);
     for slot in &GUARD_BASE_SLOTS {
-        if slot.tid.load(Ordering::Acquire) == tid && slot.active.load(Ordering::Acquire) {
+        if slot.owner.load(Ordering::Acquire) == owner && slot.active.load(Ordering::Acquire) {
             return Some(slot);
         }
     }
@@ -39,7 +82,7 @@ fn find_active_slot_by_tid(tid: usize) -> Option<&'static GuardSlot> {
     let mut node = GUARD_EXTRA_HEAD.load(Ordering::Acquire);
     while !node.is_null() {
         let slot = unsafe { &(*node).slot };
-        if slot.tid.load(Ordering::Acquire) == tid && slot.active.load(Ordering::Acquire) {
+        if slot.owner.load(Ordering::Acquire) == owner && slot.active.load(Ordering::Acquire) {
             return Some(slot);
         }
         node = unsafe { (*node).next.load(Ordering::Acquire) };
@@ -55,12 +98,9 @@ pub(super) fn acquire_slot(tid: usize) -> Option<&'static GuardSlot> {
         return Some(slot);
     }
 
+    let owner = current_owner(tid);
     for slot in &GUARD_BASE_SLOTS {
-        if slot
-            .tid
-            .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
+        if claim_slot(slot, owner) {
             return Some(slot);
         }
     }
@@ -68,18 +108,14 @@ pub(super) fn acquire_slot(tid: usize) -> Option<&'static GuardSlot> {
     let mut node = GUARD_EXTRA_HEAD.load(Ordering::Acquire);
     while !node.is_null() {
         let slot = unsafe { &(*node).slot };
-        if slot
-            .tid
-            .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
+        if claim_slot(slot, owner) {
             return Some(slot);
         }
         node = unsafe { (*node).next.load(Ordering::Acquire) };
     }
 
     let node = Box::new(GuardNode::new());
-    node.slot.tid.store(tid, Ordering::Release);
+    node.slot.owner.store(owner, Ordering::Release);
     let node_ptr = Box::into_raw(node);
 
     loop {

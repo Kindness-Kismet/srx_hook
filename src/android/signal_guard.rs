@@ -3,13 +3,13 @@
 
 use crate::errno::Errno;
 use crate::log;
-use crate::runtime::MutexPoisonRecover;
+use crate::runtime::PidLocal;
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, TryLockError};
 
 // 预分配的静态 slot 数量上限
 const GUARD_BASE_SLOT_MAX: usize = 64;
@@ -23,7 +23,7 @@ const SIGCHAIN_ALLOW_NORETURN: u64 = 1;
 const HANDLER_MODE_NONE: usize = 0;
 const HANDLER_MODE_SIGACTION: usize = 1;
 const HANDLER_MODE_SIGCHAIN: usize = 2;
-// dlsym RTLD_NEXT 在部分 Android 版本不可用，使用 -1 作为回退
+// RTLD_NEXT 使用 -1 表示，兼容各 Android 版本。
 const RTLD_NEXT_FALLBACK: *mut c_void = (-1isize) as *mut c_void;
 // sigchain 库的候选路径，按优先级排列
 const SIGCHAIN_LIB_CANDIDATES: [&CStr; 7] = [
@@ -38,9 +38,9 @@ const SIGCHAIN_LIB_CANDIDATES: [&CStr; 7] = [
 
 // 信号守卫全局开关
 static SIGSEGV_ENABLE: AtomicBool = AtomicBool::new(true);
-// 信号处理器引用计数，支持多次 add/remove 配对
-static HANDLER_REF_COUNT: AtomicUsize = AtomicUsize::new(0);
 static HANDLER_INSTALL_MODE: AtomicUsize = AtomicUsize::new(HANDLER_MODE_NONE);
+static SIGSEGV_INSTALLED: AtomicBool = AtomicBool::new(false);
+static SIGBUS_INSTALLED: AtomicBool = AtomicBool::new(false);
 // 保存被替换的原始 sigaction，用于链式转发和卸载恢复
 static SIGSEGV_OLD_ACTION: AtomicPtr<libc::sigaction> = AtomicPtr::new(ptr::null_mut());
 static SIGBUS_OLD_ACTION: AtomicPtr<libc::sigaction> = AtomicPtr::new(ptr::null_mut());
@@ -101,9 +101,10 @@ const SIGJMP_BUF_WORDS: usize = sigjmp_buf_words();
 struct SigJmpBuf([libc::c_long; SIGJMP_BUF_WORDS]);
 
 // 每线程的信号守卫上下文，包含 sigsetjmp 环境栈
-// tid 用于线程归属，depth 支持嵌套守卫
+// owner 同时包含 PID 与 TID，depth 支持嵌套守卫。
 struct GuardSlot {
-    tid: AtomicUsize,
+    owner: AtomicU64,
+    reservations: AtomicUsize,
     active: AtomicBool,
     depth: AtomicUsize,
     last_signal: AtomicUsize,
@@ -115,7 +116,8 @@ unsafe impl Sync for GuardSlot {}
 impl GuardSlot {
     const fn new() -> Self {
         Self {
-            tid: AtomicUsize::new(0),
+            owner: AtomicU64::new(0),
+            reservations: AtomicUsize::new(0),
             active: AtomicBool::new(false),
             depth: AtomicUsize::new(0),
             last_signal: AtomicUsize::new(0),
@@ -163,8 +165,35 @@ mod sigchain;
 mod slot;
 
 fn handler_lock() -> &'static Mutex<()> {
-    static HANDLER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    HANDLER_LOCK.get_or_init(|| Mutex::new(()))
+    static HANDLER_LOCK: PidLocal<Mutex<()>> = PidLocal::new(|| Mutex::new(()));
+    HANDLER_LOCK.get()
+}
+
+// 初始化先在私有对象完成，fork 只能观察到空指针或完整函数表。
+fn published_functions<T>(published: &AtomicPtr<T>, resolve: fn() -> T) -> &T {
+    let current = published.load(Ordering::Acquire);
+    if !current.is_null() {
+        return unsafe { &*current };
+    }
+    let candidate = Box::into_raw(Box::new(resolve()));
+    match published.compare_exchange(
+        ptr::null_mut(),
+        candidate,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => unsafe { &*candidate },
+        Err(current) => {
+            unsafe { drop(Box::from_raw(candidate)) };
+            unsafe { &*current }
+        }
+    }
+}
+
+pub(crate) fn prime_process_state() {
+    abi::prime();
+    sigchain::prime();
+    let _ = handler_lock();
 }
 
 // 将被替换的原始 sigaction 堆分配后存入原子指针
@@ -189,85 +218,74 @@ pub fn is_enabled() -> bool {
     SIGSEGV_ENABLE.load(Ordering::SeqCst)
 }
 
-// 安装信号处理器，引用计数管理
-// 优先尝试 sigchain 模式（ART 环境），失败则回退 sigaction
+// 信号处理器随进程保留，避免 clear 撤销其他线程正在使用的守卫。
 pub fn add_handler() -> Result<(), Errno> {
     if !is_enabled() {
         return Ok(());
     }
 
-    let _handler_lock = handler_lock().lock_or_poison();
-    let current_count = HANDLER_REF_COUNT.load(Ordering::Acquire);
-    if current_count > 0 {
-        HANDLER_REF_COUNT.store(current_count.saturating_add(1), Ordering::Release);
+    crate::runtime::check_management()?;
+    if HANDLER_INSTALL_MODE.load(Ordering::Acquire) != HANDLER_MODE_NONE {
+        return Ok(());
+    }
+    let _initialization = crate::runtime::InitializationCall::enter();
+    prime_process_state();
+    let _handler_lock = match handler_lock().try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(TryLockError::WouldBlock) => return Err(Errno::Busy),
+    };
+    if HANDLER_INSTALL_MODE.load(Ordering::Acquire) != HANDLER_MODE_NONE {
         return Ok(());
     }
 
     if sigchain::install_sigchain_handlers() {
         HANDLER_INSTALL_MODE.store(HANDLER_MODE_SIGCHAIN, Ordering::Release);
-        HANDLER_REF_COUNT.store(1, Ordering::Release);
         log::debug(format_args!("signal handlers installed via sigchain"));
         return Ok(());
     }
 
-    unsafe {
-        let mut act: libc::sigaction = std::mem::zeroed();
-        act.sa_sigaction = handlers::sigsegv_handler as *const () as usize;
-        act.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART | SA_EXPOSE_TAGBITS;
-        libc::sigfillset(&mut act.sa_mask);
-
-        let mut old_segv: libc::sigaction = std::mem::zeroed();
-        if abi::raw_sigaction(libc::SIGSEGV, &act, &mut old_segv) != 0 {
-            return Err(Errno::Unknown);
-        }
-
-        act.sa_sigaction = handlers::sigbus_handler as *const () as usize;
-        let mut old_bus: libc::sigaction = std::mem::zeroed();
-        if abi::raw_sigaction(libc::SIGBUS, &act, &mut old_bus) != 0 {
-            let _ = abi::raw_sigaction(libc::SIGSEGV, &old_segv, std::ptr::null_mut());
-            return Err(Errno::Unknown);
-        }
-
-        store_old_action(&SIGSEGV_OLD_ACTION, old_segv);
-        store_old_action(&SIGBUS_OLD_ACTION, old_bus);
-    }
+    install_sigaction(libc::SIGSEGV, handlers::sigsegv_handler as *const () as usize,
+        &SIGSEGV_OLD_ACTION, &SIGSEGV_INSTALLED)?;
+    install_sigaction(libc::SIGBUS, handlers::sigbus_handler as *const () as usize,
+        &SIGBUS_OLD_ACTION, &SIGBUS_INSTALLED)?;
 
     HANDLER_INSTALL_MODE.store(HANDLER_MODE_SIGACTION, Ordering::Release);
-    HANDLER_REF_COUNT.store(1, Ordering::Release);
     log::debug(format_args!("signal handlers installed via sigaction"));
     Ok(())
 }
 
-// 卸载信号处理器，引用计数归零时恢复原始 handler
-pub fn remove_handler() {
-    let _handler_lock = handler_lock().lock_or_poison();
-    let current_count = HANDLER_REF_COUNT.load(Ordering::Acquire);
-    if current_count == 0 {
-        return;
+// 预发布安装窗口的转发目标，再保存原子替换返回的准确前任。
+fn install_sigaction(
+    signal: libc::c_int,
+    handler: usize,
+    previous: &AtomicPtr<libc::sigaction>,
+    installed: &AtomicBool,
+) -> Result<(), Errno> {
+    if installed.load(Ordering::Acquire) {
+        return Ok(());
     }
-    if current_count > 1 {
-        HANDLER_REF_COUNT.store(current_count - 1, Ordering::Release);
-        return;
-    }
-
-    let mode = HANDLER_INSTALL_MODE.load(Ordering::Acquire);
-    if mode == HANDLER_MODE_SIGCHAIN {
-        let _ = sigchain::remove_sigchain_handlers();
-    } else if mode == HANDLER_MODE_SIGACTION {
-        unsafe {
-            let old = load_sigsegv_old_action();
-            if !old.is_null() {
-                let _ = abi::raw_sigaction(libc::SIGSEGV, old, std::ptr::null_mut());
-            }
-            let old_bus = load_sigbus_old_action();
-            if !old_bus.is_null() {
-                let _ = abi::raw_sigaction(libc::SIGBUS, old_bus, std::ptr::null_mut());
-            }
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        if abi::raw_sigaction(signal, ptr::null(), &mut old) != 0 {
+            return Err(Errno::Unknown);
         }
+        store_old_action(previous, old);
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = handler;
+        action.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART | SA_EXPOSE_TAGBITS;
+        libc::sigfillset(&mut action.sa_mask);
+        let mut replaced = Box::new(std::mem::zeroed::<libc::sigaction>());
+        if abi::raw_sigaction(signal, &action, &mut *replaced) != 0 {
+            return Err(Errno::Unknown);
+        }
+        previous.store(Box::into_raw(replaced), Ordering::Release);
     }
-    HANDLER_INSTALL_MODE.store(HANDLER_MODE_NONE, Ordering::Release);
-    HANDLER_REF_COUNT.store(0, Ordering::Release);
+    installed.store(true, Ordering::Release);
+    Ok(())
 }
+
+pub use guard_exec::{PreparedGuard, prepare};
 
 // 在信号守卫保护下执行闭包，捕获 SIGSEGV/SIGBUS 后返回 Err
 pub fn with_guard<T, F>(f: F) -> Result<T, Errno>

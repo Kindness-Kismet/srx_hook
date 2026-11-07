@@ -2,7 +2,7 @@
 use crate::log;
 use std::ffi::{CStr, CString, c_void};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::hints::{
     resolve_namespace_id_by_base, resolve_namespace_id_by_instance, resolve_namespace_id_by_path,
@@ -15,8 +15,8 @@ use super::{
 
 // 延迟解析 dlinfo 函数地址，优先 RTLD_NEXT 再回退到 libdl.so NOLOAD
 pub(super) fn resolve_dlinfo_fn() -> Option<DlinfoFn> {
-    static DLINFO_FN: OnceLock<Option<DlinfoFn>> = OnceLock::new();
-    *DLINFO_FN.get_or_init(|| {
+    static DLINFO_FN: AtomicUsize = AtomicUsize::new(0);
+    let address = cached_address(&DLINFO_FN, || {
         let mut symbol = unsafe { libc::dlsym(RTLD_NEXT_FALLBACK, c"dlinfo".as_ptr()) };
         if symbol.is_null() {
             let handle =
@@ -30,20 +30,21 @@ pub(super) fn resolve_dlinfo_fn() -> Option<DlinfoFn> {
         }
         if symbol.is_null() {
             log::debug(format_args!("dlinfo symbol unavailable"));
-            None
+            0
         } else {
             log::debug(format_args!(
                 "dlinfo symbol resolved at 0x{:x}",
                 symbol as usize
             ));
-            Some(unsafe { std::mem::transmute::<*mut c_void, DlinfoFn>(symbol) })
+            symbol as usize
         }
-    })
+    });
+    (address != 0).then(|| unsafe { std::mem::transmute::<usize, DlinfoFn>(address) })
 }
 
 fn resolve_dladdr1_fn() -> Option<Dladdr1Fn> {
-    static DLADDR1_FN: OnceLock<Option<Dladdr1Fn>> = OnceLock::new();
-    *DLADDR1_FN.get_or_init(|| {
+    static DLADDR1_FN: AtomicUsize = AtomicUsize::new(0);
+    let address = cached_address(&DLADDR1_FN, || {
         let mut symbol = unsafe { libc::dlsym(RTLD_NEXT_FALLBACK, c"dladdr1".as_ptr()) };
         if symbol.is_null() {
             let handle =
@@ -55,12 +56,23 @@ fn resolve_dladdr1_fn() -> Option<Dladdr1Fn> {
                 }
             }
         }
-        if symbol.is_null() {
-            None
-        } else {
-            Some(unsafe { std::mem::transmute::<*mut c_void, Dladdr1Fn>(symbol) })
+        if symbol.is_null() { 0 } else { symbol as usize }
+    });
+    (address != 0).then(|| unsafe { std::mem::transmute::<usize, Dladdr1Fn>(address) })
+}
+
+fn cached_address(cache: &AtomicUsize, resolve: impl FnOnce() -> usize) -> usize {
+    let cached = cache.load(Ordering::Acquire);
+    let value = if cached == 0 {
+        let resolved = resolve().max(1);
+        match cache.compare_exchange(0, resolved, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => resolved,
+            Err(published) => published,
         }
-    })
+    } else {
+        cached
+    };
+    if value == 1 { 0 } else { value }
 }
 
 // 通过 dlinfo(RTLD_DI_LINKMAP) 从 handle 解析模块完整身份
@@ -156,7 +168,7 @@ pub(super) fn resolve_namespace_id_from_link_map(link_map_ptr: *mut LinkMap) -> 
     Some(head as usize)
 }
 
-// 通过 dlsym 探测符号地址再 dladdr 反查模块信息，作为 dlinfo 不可用时的回退
+// 通过 dlsym 探测符号地址，再由 dladdr 反查模块信息。
 pub(super) fn resolve_module_from_handle_symbol(
     handle: *mut c_void,
     probe_symbol: &str,

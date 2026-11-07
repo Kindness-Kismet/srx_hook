@@ -1,13 +1,12 @@
 // monitor 线程轮询循环，结合事件驱动与周期性轮询两种刷新策略
-use std::ffi::c_void;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     MONITOR_FALLBACK_BURST_ROUNDS, MONITOR_FALLBACK_REFRESH_INTERVAL_MAX,
-    MONITOR_FALLBACK_REFRESH_INTERVAL_MIN, MONITOR_PERIODIC_ENABLED,
+    MONITOR_FALLBACK_REFRESH_INTERVAL_MIN,
 };
-use crate::runtime::state::{MutexPoisonRecover, RwLockPoisonRecover};
+use crate::runtime::state::{MutexPoisonRecover, ProcessRuntime};
 
 // 周期性轮询状态，管理退避间隔和 burst 轮次
 struct FallbackPollState {
@@ -24,12 +23,6 @@ enum EpochDelta {
     AddedOnly,
     Changed,
     Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PeriodicRefreshKind {
-    NewModulesOnly,
-    Full,
 }
 
 impl FallbackPollState {
@@ -101,115 +94,98 @@ fn classify_epoch_delta(last: Option<(u64, u64)>, current: (u64, u64)) -> EpochD
     EpochDelta::Changed
 }
 
-pub(super) fn monitor_loop() {
-    let mut fallback_poll = FallbackPollState::new();
+fn is_live(runtime: &ProcessRuntime, epoch: usize) -> bool {
+    runtime.is_current()
+        && runtime.monitor_running.load(Ordering::Acquire)
+        && super::flags().epoch.load(Ordering::Acquire) == epoch
+}
 
-    loop {
-        super::maybe_install_legacy_hooks_on_demand();
+fn is_owner(runtime: &ProcessRuntime, epoch: usize) -> bool {
+    is_live(runtime, epoch)
+        && runtime
+            .monitor_thread
+            .lock_or_poison()
+            .as_ref()
+            .is_some_and(|handle| handle.thread().id() == std::thread::current().id())
+}
 
-        let mut state = super::GLOBAL.state.lock_or_poison();
-        let mut periodic_refresh = false;
-        while state.monitor_running && !state.refresh_requested {
-            if MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) {
-                let timeout = fallback_poll.timeout();
-                let (next_state, wait_result) = super::GLOBAL
-                    .condvar
-                    .wait_timeout(state, timeout)
-                    .unwrap_or_else(|e| e.into_inner());
-                state = next_state;
-                if state.refresh_requested {
-                    break;
-                }
-                if wait_result.timed_out() {
-                    periodic_refresh = true;
-                    break;
-                }
-            } else {
-                fallback_poll.reset_for_event_mode();
-                state = super::GLOBAL
-                    .condvar
-                    .wait(state)
-                    .unwrap_or_else(|e| e.into_inner());
-            }
-        }
-        if !state.monitor_running {
+pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
+    let event_interval = Duration::from_millis(50);
+    // spawn 在锁外执行，等待创建方发布线程句柄后再处理任务。
+    while is_live(runtime, epoch) {
+        if is_owner(runtime, epoch) {
             break;
         }
-        let known_module_count_before = state.known_modules.len();
-        let event_refresh = state.refresh_requested;
-        let pending_handles = std::mem::take(&mut state.pending_module_handles);
-        state.pending_module_handle_set.clear();
-        state.refresh_requested = false;
-        drop(state);
-
-        if !pending_handles.is_empty() {
-            super::log::debug(format_args!(
-                "consume {} pending module handles",
-                pending_handles.len()
-            ));
-            for handle in pending_handles {
-                super::refresh::observe_module_handle(handle as *mut c_void);
-            }
+        std::thread::park_timeout(event_interval);
+    }
+    while is_owner(runtime, epoch) {
+        match crate::runtime::fork::check_management() {
+            Ok(()) => break,
+            Err(super::Errno::Busy) => std::thread::park_timeout(event_interval),
+            Err(_) => return,
         }
-
-        let mut periodic_epoch_changed = false;
-        let mut periodic_refresh_kind = PeriodicRefreshKind::Full;
-        if periodic_refresh {
+    }
+    if !is_owner(runtime, epoch) {
+        return;
+    }
+    let mut fallback_poll = FallbackPollState::new();
+    let mut last_refresh = Instant::now();
+    while is_owner(runtime, epoch) {
+        if crate::runtime::fork::check_management() == Err(super::Errno::Busy) {
+            std::thread::park_timeout(event_interval);
+            continue;
+        }
+        super::install_auto_loader_monitor_hooks();
+        super::maybe_install_legacy_hooks_on_demand();
+        if !is_owner(runtime, epoch) {
+            break;
+        }
+        let event_refresh = runtime.refresh_requested.swap(false, Ordering::AcqRel);
+        let periodic_enabled = super::flags().periodic_enabled.load(Ordering::Acquire);
+        if !periodic_enabled {
+            fallback_poll.reset_for_event_mode();
+        }
+        let periodic_refresh =
+            periodic_enabled && last_refresh.elapsed() >= fallback_poll.timeout();
+        if !event_refresh && !periodic_refresh {
+            std::thread::park_timeout(event_interval);
+            continue;
+        }
+        let mut module_changed = false;
+        if periodic_refresh && !event_refresh {
             match fallback_poll.poll_epoch_delta() {
                 EpochDelta::Unchanged => {
                     fallback_poll.on_periodic_refresh(false);
+                    last_refresh = Instant::now();
                     continue;
                 }
-                EpochDelta::AddedOnly => {
-                    periodic_epoch_changed = true;
-                    periodic_refresh_kind = PeriodicRefreshKind::NewModulesOnly;
-                    super::log::debug(format_args!("fallback periodic refresh kind=new-modules"));
-                }
-                EpochDelta::Changed => {
-                    periodic_epoch_changed = true;
-                    periodic_refresh_kind = PeriodicRefreshKind::Full;
-                    super::log::debug(format_args!("fallback periodic refresh kind=full"));
-                }
-                EpochDelta::Unknown => {
-                    periodic_refresh_kind = PeriodicRefreshKind::Full;
-                    super::log::debug(format_args!(
-                        "fallback periodic refresh kind=full unknown-epoch"
-                    ));
-                }
+                EpochDelta::AddedOnly | EpochDelta::Changed => module_changed = true,
+                EpochDelta::Unknown => {}
             }
         }
-
-        let _dlclose_guard = super::GLOBAL.dlclose_lock.read_or_poison();
-        let _refresh_guard = super::GLOBAL.refresh_mutex.lock_or_poison();
-        let mut state = super::GLOBAL.state.lock_or_poison();
-        let (status, events, _errors) = if periodic_refresh {
-            match periodic_refresh_kind {
-                PeriodicRefreshKind::NewModulesOnly => {
-                    super::refresh::refresh_new_modules(&mut state)
-                }
-                PeriodicRefreshKind::Full => super::refresh::refresh_all(&mut state),
-            }
-        } else {
-            super::refresh::refresh_new_modules(&mut state)
-        };
+        let (status, _) = super::super::entry_hook::refresh();
+        if !is_owner(runtime, epoch) {
+            break;
+        }
+        if status == super::Errno::Busy {
+            runtime.refresh_requested.store(true, Ordering::Release);
+            std::thread::park_timeout(event_interval);
+            continue;
+        }
+        if matches!(
+            status,
+            super::Errno::Uninit | super::Errno::ForkContextUnavailable
+        ) {
+            break;
+        }
         if status != super::Errno::Ok {
-            super::log::warn(format_args!("auto refresh status {:?}", status));
+            super::log::warn(format_args!("auto refresh status {status:?}"));
         }
-        let known_module_count_after = state.known_modules.len();
-        drop(state);
-        super::super::invoke_callbacks(events);
-
-        if !MONITOR_PERIODIC_ENABLED.load(Ordering::Acquire) {
-            continue;
-        }
-        if periodic_refresh {
-            fallback_poll.on_periodic_refresh(
-                periodic_epoch_changed || known_module_count_after != known_module_count_before,
-            );
-            continue;
-        }
+        last_refresh = Instant::now();
         if event_refresh {
             fallback_poll.on_event_refresh();
+        } else {
+            fallback_poll.on_periodic_refresh(module_changed);
         }
     }
 }

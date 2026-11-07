@@ -8,6 +8,7 @@ use std::ffi::c_void;
 
 mod callback_ctx;
 mod cfi;
+mod fork;
 mod hub;
 mod lifecycle;
 mod record;
@@ -16,10 +17,15 @@ mod rules;
 mod state;
 mod thread_state;
 
-pub(crate) use state::MutexPoisonRecover;
+pub(crate) use state::PidLocal;
+pub(crate) use fork::{InitializationCall, LoaderCall};
 
 pub(crate) fn is_forked_child() -> bool {
     state::is_forked_child()
+}
+
+pub(crate) fn check_management() -> Result<(), Errno> {
+    fork::check_management()
 }
 
 pub(crate) fn get_version() -> String {
@@ -42,7 +48,18 @@ pub(crate) fn hook_single(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    lifecycle::hook_single(
+    hook_single_checked(caller_path_name, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(crate) fn hook_single_checked(
+    caller_path_name: &str,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    lifecycle::hook_single_checked(
         caller_path_name,
         callee_path_name,
         sym_name,
@@ -61,7 +78,19 @@ pub(crate) fn hook_partial(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    lifecycle::hook_partial(
+    hook_partial_checked(caller_allow_filter, caller_allow_filter_arg, callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(crate) fn hook_partial_checked(
+    caller_allow_filter: CallerAllowFilter,
+    caller_allow_filter_arg: *mut c_void,
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    lifecycle::hook_partial_checked(
         caller_allow_filter,
         caller_allow_filter_arg,
         callee_path_name,
@@ -79,7 +108,17 @@ pub(crate) fn hook_all(
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
 ) -> Option<HookStub> {
-    lifecycle::hook_all(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+    hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg).or_else(|error| error.stub.ok_or(error)).ok()
+}
+
+pub(crate) fn hook_all_checked(
+    callee_path_name: Option<&str>,
+    sym_name: &str,
+    new_func: *mut c_void,
+    hooked: Option<HookedCallback>,
+    hooked_arg: *mut c_void,
+) -> Result<HookStub, crate::api::HookError> {
+    lifecycle::hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
 }
 
 pub(crate) fn unhook(stub: HookStub) -> Errno {
@@ -107,6 +146,14 @@ pub(crate) fn refresh() -> (Errno, Vec<crate::api::RefreshError>) {
 
 pub(crate) fn clear() {
     lifecycle::clear();
+}
+
+pub(crate) fn clear_checked() -> Result<crate::api::ClearReport, crate::api::ClearError> {
+    lifecycle::clear_checked()
+}
+
+pub(crate) fn fork_safe() -> bool {
+    fork::handlers_registered()
 }
 
 pub(crate) fn get_mode() -> HookMode {
@@ -260,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicated_proxy_address_is_rejected() {
+    fn duplicate_proxy_registrations_keep_distinct_stubs() {
         unsafe extern "C" fn dummy_proxy(_s: *const i8) -> i32 {
             0
         }
@@ -287,7 +334,10 @@ mod tests {
             None,
             std::ptr::null_mut(),
         );
-        assert!(second.is_none());
+        assert!(second.is_some());
+        assert_ne!(first, second);
+        assert_eq!(super::unhook(first.expect("first stub")), Errno::Ok);
+        assert_eq!(super::unhook(second.expect("second stub")), Errno::Ok);
         clear();
     }
 }

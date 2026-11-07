@@ -1,20 +1,13 @@
-// PLT hook 调度中心（Hub）
-// 每个被 hook 的 PLT slot 对应一个 Hub，管理 proxy 链表和 trampoline 入口
+// 已发布的入口保持稳定，代理链独立发布并按物理调用帧回收。
 use crate::errno::Errno;
-use crate::runtime::state::MutexPoisonRecover;
-use once_cell::sync::Lazy;
+use crate::runtime::state::{MutexPoisonRecover, PidLocal};
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 mod stack;
 mod trampoline;
 
-// 延迟销毁等待时间，确保仍在栈上的 trampoline 帧安全返回
-const HUB_DESTROY_DELAY_SEC: u64 = 10;
-
-// proxy 链表节点，ref_count 支持同一函数被多个 task 引用
 struct ProxyNode {
     func: usize,
     ref_count: usize,
@@ -22,241 +15,306 @@ struct ProxyNode {
     next: *mut ProxyNode,
 }
 
-// Hub 核心结构：orig_addr 为原始函数地址，trampo 为 trampoline 代码地址
-// head 为 proxy 链表头，采用无锁读和有锁写
+struct ProxyChain {
+    head: *mut ProxyNode,
+    readers: AtomicU64,
+    hub: usize,
+}
+
+impl Drop for ProxyChain {
+    fn drop(&mut self) {
+        let mut node = self.head;
+        while !node.is_null() {
+            let owned = unsafe { Box::from_raw(node) };
+            node = owned.next;
+        }
+    }
+}
+
 pub(super) struct Hub {
     pub(super) orig_addr: usize,
     pub(super) trampo: usize,
-    head: AtomicPtr<ProxyNode>,
-    lock: Mutex<()>,
+    head: AtomicPtr<ProxyChain>,
+    acquiring: AtomicU64,
+    published: AtomicBool,
 }
 
-// 待延迟销毁的 Hub 记录
-struct RetiredHub {
-    hub_ptr: usize,
-    ts: u64,
+static RETIRED_CHAINS: PidLocal<Mutex<Vec<usize>>> = PidLocal::new(|| Mutex::new(Vec::new()));
+
+fn process_id() -> u32 {
+    unsafe { libc::getpid() as u32 }
 }
 
-static RETIRED_HUBS: Lazy<Mutex<Vec<RetiredHub>>> = Lazy::new(|| Mutex::new(Vec::new()));
-// 全局活跃栈帧计数，非零时禁止立即回收 retired hub
-static ACTIVE_STACK_FRAMES: AtomicUsize = AtomicUsize::new(0);
-
-fn now_sec() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
-}
-
-#[inline]
-fn active_stack_frames() -> usize {
-    ACTIVE_STACK_FRAMES.load(Ordering::Acquire)
-}
-
-pub(super) fn mark_stack_frame_push() {
-    ACTIVE_STACK_FRAMES.fetch_add(1, Ordering::AcqRel);
-}
-
-pub(super) fn mark_stack_frames_pop(count: usize) {
-    if count == 0 {
-        return;
+fn counter_value(value: u64, pid: u32) -> u32 {
+    if (value >> 32) as u32 == pid {
+        value as u32
+    } else {
+        0
     }
-    let _ = ACTIVE_STACK_FRAMES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-        Some(current.saturating_sub(count))
-    });
 }
 
-// 释放 Hub 及其全部 proxy 节点和 trampoline 内存
-unsafe fn destroy_hub_now(hub_ptr: *mut Hub) {
-    if hub_ptr.is_null() {
-        return;
-    }
-    let hub = unsafe { Box::from_raw(hub_ptr) };
-    let mut node = hub.head.load(Ordering::Acquire);
-    while !node.is_null() {
-        let next = unsafe { (*node).next };
-        unsafe {
-            drop(Box::from_raw(node));
+fn counter_acquire(counter: &AtomicU64, pid: u32) {
+    let mut old = counter.load(Ordering::SeqCst);
+    loop {
+        let count = counter_value(old, pid);
+        let next = ((pid as u64) << 32) | (u64::from(count) + 1);
+        match counter.compare_exchange_weak(old, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return,
+            Err(current) => old = current,
         }
-        node = next;
-    }
-    if hub.trampo != 0 {
-        trampoline::free_trampo(hub.trampo);
     }
 }
 
-// 回收已过期的 retired hub；force=true 时无视延迟和活跃帧计数
-pub(super) fn collect_retired(force: bool) {
-    let now = now_sec();
-    let active_frames = active_stack_frames();
+fn counter_release(counter: &AtomicU64, pid: u32) {
+    let mut old = counter.load(Ordering::SeqCst);
+    loop {
+        let count = counter_value(old, pid);
+        if count == 0 {
+            return;
+        }
+        let next = ((pid as u64) << 32) | u64::from(count - 1);
+        match counter.compare_exchange_weak(old, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return,
+            Err(current) => old = current,
+        }
+    }
+}
+
+fn retire_chain(chain: *mut ProxyChain) {
+    if !chain.is_null() {
+        RETIRED_CHAINS.get().lock_or_poison().push(chain as usize);
+    }
+}
+
+// 链的回收统一等待返回帧和入口读取窗口释放引用。
+pub(super) fn collect_retired(_force: bool) {
+    let pid = process_id();
     let mut ready = Vec::new();
     {
-        let mut retired = RETIRED_HUBS.lock_or_poison();
-        let mut idx = 0;
-        while idx < retired.len() {
-            let expired = force
-                || (active_frames == 0
-                    && now.saturating_sub(retired[idx].ts) >= HUB_DESTROY_DELAY_SEC);
-            if expired {
-                let item = retired.swap_remove(idx);
-                ready.push(item.hub_ptr as *mut Hub);
-            } else {
-                idx += 1;
+        let mut retired = RETIRED_CHAINS.get().lock_or_poison();
+        let mut index = 0;
+        while index < retired.len() {
+            let chain = unsafe { &*(retired[index] as *const ProxyChain) };
+            let hub = unsafe { &*(chain.hub as *const Hub) };
+            if counter_value(hub.acquiring.load(Ordering::SeqCst), pid) != 0
+                || counter_value(chain.readers.load(Ordering::SeqCst), pid) != 0
+            {
+                index += 1;
+                continue;
             }
+            ready.push(retired.swap_remove(index));
         }
     }
-    for hub_ptr in ready {
-        unsafe {
-            destroy_hub_now(hub_ptr);
-        }
+    for chain in ready {
+        unsafe { drop(Box::from_raw(chain as *mut ProxyChain)) };
     }
 }
 
-// 创建 Hub：分配 trampoline 并绑定 push/pop 回调
 pub(super) fn create_hub(orig_addr: usize) -> Result<*mut Hub, Errno> {
     collect_retired(false);
-
-    let hub = Box::new(Hub {
-        orig_addr,
-        trampo: 0,
-        head: AtomicPtr::new(ptr::null_mut()),
-        lock: Mutex::new(()),
-    });
-    let hub_ptr = Box::into_raw(hub);
-
-    let trampo = match trampoline::alloc_trampo() {
-        Ok(value) => value,
-        Err(err) => {
-            unsafe {
-                drop(Box::from_raw(hub_ptr));
-            }
-            return Err(err);
-        }
-    };
-
-    let init_result = unsafe {
-        trampoline::init_trampo(
-            trampo,
-            hub_ptr as usize,
-            stack::hub_push_stack as *const () as usize,
-            stack::hub_pop_stack as *const () as usize,
-        )
-    };
-    if let Err(err) = init_result {
-        trampoline::free_trampo(trampo);
-        unsafe {
-            drop(Box::from_raw(hub_ptr));
-        }
-        return Err(err);
-    }
-
-    unsafe {
-        (*hub_ptr).trampo = trampo;
-    }
-    Ok(hub_ptr)
+    trampoline::alloc_hub(orig_addr)
 }
 
-pub(super) fn destroy_hub(hub_ptr: *mut Hub, with_delay: bool) {
+// 构建与清理在提交区外，提交仅交换完整链指针。
+pub(super) struct PreparedChain {
+    hub: usize,
+    next: *mut ProxyChain,
+    retired: *mut ProxyChain,
+    owner_pid: u32,
+    published: bool,
+}
+
+impl PreparedChain {
+    pub(super) fn hub_ptr(&self) -> *mut Hub {
+        self.hub as *mut Hub
+    }
+
+    pub(super) fn trampoline(&self) -> usize {
+        hub_trampo(self.hub_ptr())
+    }
+}
+
+impl Drop for PreparedChain {
+    fn drop(&mut self) {
+        if self.owner_pid != process_id() {
+            return;
+        }
+        if !self.published && !self.next.is_null() {
+            unsafe { drop(Box::from_raw(self.next)) };
+        }
+        retire_chain(self.retired);
+        collect_retired(false);
+    }
+}
+
+// 既有函数保持链中顺序，新函数按输入顺序置于链首；重复 task 只增加引用数。
+pub(super) fn build_chain(hub_ptr: *mut Hub, proxies: &[usize]) -> Result<PreparedChain, Errno> {
+    if hub_ptr.is_null() || proxies.contains(&0) {
+        return Err(Errno::InvalidArg);
+    }
+    let mut entries = Vec::<(usize, usize)>::new();
+    for &func in proxies {
+        if let Some((_, count)) = entries.iter_mut().find(|(existing, _)| *existing == func) {
+            *count += 1;
+        } else {
+            entries.push((func, 1));
+        }
+    }
+    let previous = current_proxies(unsafe { &*hub_ptr });
+    let mut ordered = Vec::with_capacity(entries.len());
+    for &(func, count) in &entries {
+        if !previous.contains(&func) {
+            ordered.push((func, count));
+        }
+    }
+    for func in previous {
+        if ordered.iter().any(|&(existing, _)| existing == func) {
+            continue;
+        }
+        if let Some(&entry) = entries.iter().find(|&&(existing, _)| existing == func) {
+            ordered.push(entry);
+        }
+    }
+    let entries = ordered;
+    let next = if entries.is_empty() {
+        ptr::null_mut()
+    } else {
+        let mut chain = Box::new(ProxyChain {
+            head: ptr::null_mut(),
+            readers: AtomicU64::new(0),
+            hub: hub_ptr as usize,
+        });
+        for (func, ref_count) in entries.into_iter().rev() {
+            chain.head = Box::into_raw(Box::new(ProxyNode {
+                func,
+                ref_count,
+                enabled: AtomicBool::new(true),
+                next: chain.head,
+            }));
+        }
+        Box::into_raw(chain)
+    };
+    Ok(PreparedChain {
+        hub: hub_ptr as usize,
+        next,
+        retired: ptr::null_mut(),
+        owner_pid: process_id(),
+        published: false,
+    })
+}
+
+pub(super) fn publish_chain(prepared: &mut PreparedChain) {
+    let hub = unsafe { &*(prepared.hub as *const Hub) };
+    prepared.retired = hub.head.swap(prepared.next, Ordering::SeqCst);
+    hub.published.store(true, Ordering::Release);
+    prepared.published = true;
+}
+
+// 调用方独占失败计划中的新 Hub；已发布入口保留至进程退出。
+pub(super) fn discard_unpublished_hub(hub_ptr: *mut Hub) {
+    if hub_ptr.is_null() || unsafe { (*hub_ptr).published.load(Ordering::Acquire) } {
+        return;
+    }
+    trampoline::discard_unpublished_hub(hub_ptr);
+}
+
+pub(super) fn destroy_hub(hub_ptr: *mut Hub, _with_delay: bool) {
     if hub_ptr.is_null() {
         return;
     }
-
+    let chain = unsafe { (*hub_ptr).head.swap(ptr::null_mut(), Ordering::SeqCst) };
+    retire_chain(chain);
     collect_retired(false);
-    if with_delay {
-        let mut retired = RETIRED_HUBS.lock_or_poison();
-        retired.push(RetiredHub {
-            hub_ptr: hub_ptr as usize,
-            ts: now_sec(),
-        });
-        return;
-    }
-
-    unsafe {
-        destroy_hub_now(hub_ptr);
-    }
 }
 
 pub(super) fn hub_trampo(hub_ptr: *mut Hub) -> usize {
     if hub_ptr.is_null() {
-        return 0;
+        0
+    } else {
+        unsafe { (*hub_ptr).trampo }
     }
-    unsafe { (*hub_ptr).trampo }
 }
 
-// 向 Hub 添加 proxy 函数；已存在则增加引用计数并重新启用
+// 入口先保护获取窗口，防止加载链指针与增加引用之间发生回收。
+fn acquire_chain(hub: &Hub) -> *mut ProxyChain {
+    let pid = process_id();
+    counter_acquire(&hub.acquiring, pid);
+    let chain = hub.head.load(Ordering::SeqCst);
+    if !chain.is_null() {
+        counter_acquire(unsafe { &(*chain).readers }, pid);
+    }
+    counter_release(&hub.acquiring, pid);
+    chain
+}
+
+pub(crate) fn release_chain(chain: usize) {
+    if chain != 0 {
+        counter_release(
+            unsafe { &(*(chain as *const ProxyChain)).readers },
+            process_id(),
+        );
+    }
+}
+
+// child 只为仍在当前线程返回栈上的链恢复本进程引用。
+pub(crate) fn inherit_chain(chain: usize) {
+    if chain != 0 {
+        counter_acquire(
+            unsafe { &(*(chain as *const ProxyChain)).readers },
+            process_id(),
+        );
+    }
+}
+
+fn current_proxies(hub: &Hub) -> Vec<usize> {
+    let chain = acquire_chain(hub);
+    let mut proxies = Vec::new();
+    if !chain.is_null() {
+        let mut cursor = unsafe { (*chain).head };
+        while !cursor.is_null() {
+            let node = unsafe { &*cursor };
+            proxies.extend(std::iter::repeat_n(node.func, node.ref_count));
+            cursor = node.next;
+        }
+        release_chain(chain as usize);
+    }
+    proxies
+}
+
+// 兼容入口由运行时写者串行调用，产品提交优先使用 PreparedChain。
 pub(super) fn add_proxy(hub_ptr: *mut Hub, proxy_func: usize) -> Errno {
     if hub_ptr.is_null() || proxy_func == 0 {
         return Errno::InvalidArg;
     }
-
-    let hub = unsafe { &*hub_ptr };
-    let _guard = hub.lock.lock_or_poison();
-
-    let mut cursor = hub.head.load(Ordering::Acquire);
-    while !cursor.is_null() {
-        let node = unsafe { &mut *cursor };
-        if node.func == proxy_func {
-            node.ref_count = node.ref_count.saturating_add(1);
-            node.enabled.store(true, Ordering::SeqCst);
-            return Errno::Ok;
-        }
-        cursor = node.next;
-    }
-
-    let node = Box::new(ProxyNode {
-        func: proxy_func,
-        ref_count: 1,
-        enabled: AtomicBool::new(true),
-        next: hub.head.load(Ordering::Acquire),
-    });
-    let node_ptr = Box::into_raw(node);
-    hub.head.store(node_ptr, Ordering::Release);
+    let mut proxies = current_proxies(unsafe { &*hub_ptr });
+    let index = proxies
+        .iter()
+        .position(|&func| func == proxy_func)
+        .unwrap_or(0);
+    proxies.insert(index, proxy_func);
+    let mut prepared = match build_chain(hub_ptr, &proxies) {
+        Ok(prepared) => prepared,
+        Err(err) => return err,
+    };
+    publish_chain(&mut prepared);
     Errno::Ok
 }
 
-// 移除 proxy 函数；引用计数归零时标记 disabled 而非物理删除
-// 返回 (操作结果, 是否仍有活跃 proxy)
 pub(super) fn del_proxy(hub_ptr: *mut Hub, proxy_func: usize) -> (Errno, bool) {
     if hub_ptr.is_null() || proxy_func == 0 {
         return (Errno::InvalidArg, false);
     }
-
-    let hub = unsafe { &*hub_ptr };
-    let _guard = hub.lock.lock_or_poison();
-
-    let mut deleted = false;
-
-    let mut cursor = hub.head.load(Ordering::Acquire);
-    while !cursor.is_null() {
-        let node = unsafe { &mut *cursor };
-        if node.func == proxy_func && node.enabled.load(Ordering::Acquire) {
-            if node.ref_count > 1 {
-                node.ref_count -= 1;
-            } else {
-                node.ref_count = 0;
-                node.enabled.store(false, Ordering::SeqCst);
-            }
-            deleted = true;
-            break;
-        }
-        cursor = node.next;
-    }
-
-    let mut have_enabled_proxy = false;
-    let mut scan = hub.head.load(Ordering::Acquire);
-    while !scan.is_null() {
-        let node = unsafe { &*scan };
-        if node.enabled.load(Ordering::Acquire) {
-            have_enabled_proxy = true;
-            break;
-        }
-        scan = node.next;
-    }
-
-    if deleted {
-        return (Errno::Ok, have_enabled_proxy);
-    }
-    (Errno::NotFound, have_enabled_proxy)
+    let mut proxies = current_proxies(unsafe { &*hub_ptr });
+    let Some(index) = proxies.iter().position(|&func| func == proxy_func) else {
+        return (Errno::NotFound, !proxies.is_empty());
+    };
+    proxies.remove(index);
+    let mut prepared = match build_chain(hub_ptr, &proxies) {
+        Ok(prepared) => prepared,
+        Err(err) => return (err, !proxies.is_empty()),
+    };
+    publish_chain(&mut prepared);
+    (Errno::Ok, !proxies.is_empty())
 }
 
 pub(super) fn first_enabled(hub_ptr: *mut Hub) -> usize {
@@ -264,15 +322,14 @@ pub(super) fn first_enabled(hub_ptr: *mut Hub) -> usize {
         return 0;
     }
     let hub = unsafe { &*hub_ptr };
-    let mut cursor = hub.head.load(Ordering::Acquire);
-    while !cursor.is_null() {
-        let node = unsafe { &*cursor };
-        if node.enabled.load(Ordering::Acquire) {
-            return node.func;
-        }
-        cursor = node.next;
-    }
-    hub.orig_addr
+    let chain = acquire_chain(hub);
+    let first = if chain.is_null() {
+        hub.orig_addr
+    } else {
+        unsafe { (*(*chain).head).func }
+    };
+    release_chain(chain as usize);
+    first
 }
 
 pub(super) fn get_prev_func(func: *mut std::ffi::c_void) -> *mut std::ffi::c_void {

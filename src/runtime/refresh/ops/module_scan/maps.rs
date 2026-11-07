@@ -1,10 +1,7 @@
 // /proc/self/maps 解析与缓存，提供基于文件映射的模块枚举
-use crate::log;
-use crate::runtime::state::MutexPoisonRecover;
 use std::fs;
-use std::sync::{Mutex, OnceLock};
 
-use super::{MAPS_CACHE_FORCE_REFRESH_INTERVAL, ModuleInfo, module_epoch};
+use super::ModuleInfo;
 
 fn enumerate_modules_maps() -> Vec<ModuleInfo> {
     let Ok(content) = fs::read_to_string("/proc/self/maps") else {
@@ -19,45 +16,9 @@ fn enumerate_modules_maps() -> Vec<ModuleInfo> {
     modules
 }
 
-// 带 epoch 缓存的 maps 枚举，epoch 不变且未超过复用次数上限时返回缓存
+// 每次采集 maps 都获取当前租期内的权限和地址记录。
 pub(super) fn enumerate_modules_maps_cached() -> Vec<ModuleInfo> {
-    #[derive(Default)]
-    struct MapsCache {
-        epoch: Option<(u64, u64)>,
-        modules: Vec<ModuleInfo>,
-        reuse_count: usize,
-    }
-
-    static MAPS_CACHE: OnceLock<Mutex<MapsCache>> = OnceLock::new();
-    let cache = MAPS_CACHE.get_or_init(|| Mutex::new(MapsCache::default()));
-    let epoch = module_epoch().map(|value| (value.adds, value.subs));
-
-    let mut cache_guard = cache.lock_or_poison();
-    let can_reuse = cache_guard.epoch == epoch
-        && cache_guard.reuse_count < MAPS_CACHE_FORCE_REFRESH_INTERVAL
-        && !cache_guard.modules.is_empty();
-    if can_reuse {
-        cache_guard.reuse_count += 1;
-        return cache_guard.modules.clone();
-    }
-
-    if cache_guard.epoch != epoch {
-        cache_guard.modules.clear();
-    }
-
-    let modules = enumerate_modules_maps();
-    if cache_guard.epoch != epoch {
-        log::debug(format_args!(
-            "maps cache refresh by epoch change old={:?} new={:?} modules={}",
-            cache_guard.epoch,
-            epoch,
-            modules.len()
-        ));
-    }
-    cache_guard.epoch = epoch;
-    cache_guard.modules = modules.clone();
-    cache_guard.reuse_count = 0;
-    modules
+    enumerate_modules_maps()
 }
 
 // 解析单行 maps 记录，仅保留 offset=0 的可读 .so/linker 映射

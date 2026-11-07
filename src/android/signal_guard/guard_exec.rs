@@ -1,123 +1,141 @@
-// 信号守卫的核心执行逻辑
-// 通过 sigsetjmp/siglongjmp 实现 SIGSEGV/SIGBUS 的非局部跳转恢复
-
+// 信号守卫先准备线程资源，再用叶子调用保护内存访问。
 use crate::errno::Errno;
 use crate::log;
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
-use super::abi;
-use super::altstack;
-use super::slot;
-use super::{GUARD_STACK_DEPTH_MAX, GuardSlot, sigsetjmp};
+use super::{GUARD_STACK_DEPTH_MAX, GuardSlot, abi, altstack, sigsetjmp, slot};
 
-// 在信号守卫保护下执行闭包
-// 流程: 确保备用栈 -> 获取 slot -> 屏蔽信号 -> sigsetjmp -> 执行闭包
-pub(super) fn with_guard_impl<T, F>(f: F) -> Result<T, Errno>
-where
-    F: FnOnce() -> T,
-{
-    if !super::is_enabled() {
-        return Ok(f());
+pub struct PreparedGuard {
+    slot: Option<&'static GuardSlot>,
+    pid: libc::pid_t,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl PreparedGuard {
+    // 仅包围叶子内存操作；锁 guard 必须在调用本函数前建立。
+    pub fn run<T>(&self, f: impl FnOnce() -> T) -> Result<T, Errno> {
+        if self.pid != unsafe { libc::getpid() } {
+            return Err(Errno::Busy);
+        }
+        let Some(slot) = self.slot else {
+            return Ok(f());
+        };
+        run_guard(slot, f)
     }
+}
 
-    // RAII 守卫：drop 时递减 slot 深度，深度归零时释放 slot
-    struct GuardReset {
-        slot: &'static GuardSlot,
-        armed: bool,
-    }
-
-    impl Drop for GuardReset {
-        fn drop(&mut self) {
-            if !self.armed {
-                return;
-            }
-
-            let prev_depth = self.slot.depth.load(Ordering::Acquire);
-            if prev_depth == 0 {
-                self.slot.active.store(false, Ordering::Release);
-                self.slot.tid.store(0, Ordering::Release);
-                return;
-            }
-
-            let new_depth = prev_depth - 1;
-            self.slot.depth.store(new_depth, Ordering::Release);
-            if new_depth == 0 {
-                self.slot.active.store(false, Ordering::Release);
-                self.slot.last_signal.store(0, Ordering::Release);
-                self.slot.tid.store(0, Ordering::Release);
-            }
+impl Drop for PreparedGuard {
+    fn drop(&mut self) {
+        if self.pid != unsafe { libc::getpid() } {
+            return;
+        }
+        if let Some(slot) = self.slot {
+            slot.reservations.fetch_sub(1, Ordering::AcqRel);
+            slot::release_if_idle(slot);
         }
     }
+}
 
-    // RAII 信号掩码守卫：构造时屏蔽 SIGSEGV/SIGBUS，drop 时恢复
-    struct SignalMaskGuard {
-        prev_mask: libc::sigset_t,
-        active: bool,
+// 在发布锁外解析 ABI、分配备用栈并保留 slot。
+pub fn prepare() -> Result<PreparedGuard, Errno> {
+    let slot = if super::is_enabled() {
+        abi::prime();
+        altstack::ensure_thread_altstack()?;
+        let slot = slot::acquire_slot(abi::current_thread_id()).ok_or(Errno::SegvErr)?;
+        slot.reservations.fetch_add(1, Ordering::AcqRel);
+        Some(slot)
+    } else {
+        None
+    };
+    Ok(PreparedGuard {
+        slot,
+        pid: unsafe { libc::getpid() },
+        _not_send: PhantomData,
+    })
+}
+
+struct GuardReset {
+    slot: &'static GuardSlot,
+}
+
+impl Drop for GuardReset {
+    fn drop(&mut self) {
+        let depth = self.slot.depth.load(Ordering::Acquire);
+        self.slot.depth.store(depth - 1, Ordering::Release);
+        if depth == 1 {
+            self.slot.active.store(false, Ordering::Release);
+        }
+        slot::release_if_idle(self.slot);
+    }
+}
+
+struct SignalMaskGuard {
+    prev_mask: libc::sigset_t,
+    active: bool,
+}
+
+impl SignalMaskGuard {
+    fn block() -> Result<Self, Errno> {
+        let mut prev_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        abi::block_guard_signals(&mut prev_mask)?;
+        Ok(Self {
+            prev_mask,
+            active: true,
+        })
     }
 
-    impl SignalMaskGuard {
-        fn block() -> Result<Self, Errno> {
-            let mut prev_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-            abi::block_guard_signals(&mut prev_mask)?;
-            Ok(Self {
-                prev_mask,
-                active: true,
-            })
-        }
-
-        fn restore(&mut self) {
-            if !self.active {
-                return;
-            }
+    fn restore(&mut self) {
+        if self.active {
             abi::restore_guard_signals(&self.prev_mask);
             self.active = false;
         }
     }
+}
 
-    impl Drop for SignalMaskGuard {
-        fn drop(&mut self) {
-            self.restore();
-        }
+impl Drop for SignalMaskGuard {
+    fn drop(&mut self) {
+        self.restore();
     }
+}
 
-    let tid = abi::current_thread_id();
-    altstack::ensure_thread_altstack()?;
-    let Some(slot) = slot::acquire_slot(tid) else {
-        return Err(Errno::SegvErr);
-    };
-
-    let mut signal_guard = SignalMaskGuard::block()?;
+fn run_guard<T>(slot: &'static GuardSlot, f: impl FnOnce() -> T) -> Result<T, Errno> {
+    let mut signal_mask = SignalMaskGuard::block()?;
     let depth = slot.depth.load(Ordering::Acquire);
     if depth >= GUARD_STACK_DEPTH_MAX {
-        signal_guard.restore();
-        log::warn(format_args!(
-            "guard stack overflow depth={} max={}",
-            depth, GUARD_STACK_DEPTH_MAX
-        ));
         return Err(Errno::SegvErr);
     }
-
     slot.last_signal.store(0, Ordering::Release);
     slot.depth.store(depth + 1, Ordering::Release);
     slot.active.store(true, Ordering::Release);
-    let _guard_reset = GuardReset { slot, armed: true };
-
+    let _reset = GuardReset { slot };
     unsafe {
-        let env = slot.env_ptr(depth);
-        if sigsetjmp(env, 1) == 0 {
-            signal_guard.restore();
+        if sigsetjmp(slot.env_ptr(depth), 1) == 0 {
+            signal_mask.restore();
             Ok(f())
         } else {
-            signal_guard.restore();
-            let signal_info = slot.last_signal.load(Ordering::Acquire);
-            if signal_info != 0 {
-                let (signum, code) = slot::decode_signal_info(signal_info);
-                log::debug(format_args!(
-                    "guard caught signal signum={} code={}",
-                    signum, code
-                ));
-            }
+            signal_mask.restore();
             Err(Errno::SegvErr)
         }
     }
+}
+
+pub(super) fn with_guard_impl<T>(f: impl FnOnce() -> T) -> Result<T, Errno> {
+    let prepared = prepare()?;
+    let result = prepared.run(f);
+    if result.is_err() {
+        let signal_info = prepared
+            .slot
+            .map(|slot| slot.last_signal.load(Ordering::Acquire))
+            .unwrap_or(0);
+        if signal_info != 0 {
+            let (signum, code) = slot::decode_signal_info(signal_info);
+            log::debug(format_args!(
+                "guard caught signal signum={} code={}",
+                signum, code
+            ));
+        }
+    }
+    result
 }

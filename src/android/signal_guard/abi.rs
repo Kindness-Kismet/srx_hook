@@ -5,7 +5,7 @@ use crate::errno::Errno;
 use crate::log;
 use std::ffi::{CStr, c_void};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 
 use super::{SigActionFn, SigProcMaskFn, SignalAbiFns};
 
@@ -33,8 +33,12 @@ const SIGPROCMASK_SYMBOLS: [&CStr; 4] = [
 ];
 
 fn signal_abi_fns() -> &'static SignalAbiFns {
-    static ABI_FNS: OnceLock<SignalAbiFns> = OnceLock::new();
-    ABI_FNS.get_or_init(resolve_signal_abi_fns)
+    static ABI_FNS: AtomicPtr<SignalAbiFns> = AtomicPtr::new(ptr::null_mut());
+    super::published_functions(&ABI_FNS, resolve_signal_abi_fns)
+}
+
+pub(super) fn prime() {
+    let _ = signal_abi_fns();
 }
 
 // 从指定 handle 中按候选符号名列表查找第一个可用的函数指针
@@ -83,6 +87,7 @@ fn fill_signal_abi_from_library(
 // 多策略解析信号 ABI 函数指针
 // 查找顺序: RTLD_DEFAULT -> 已加载的 libc -> dlopen libc -> RTLD_NEXT
 fn resolve_signal_abi_fns() -> SignalAbiFns {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     let mut sigaction_ptr: *mut c_void = ptr::null_mut();
     let mut sigprocmask_ptr: *mut c_void = ptr::null_mut();
 

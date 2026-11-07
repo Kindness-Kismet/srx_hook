@@ -1,23 +1,83 @@
 // dlopen/dlclose 系列函数的真实地址解析与调用封装
 // 支持 loader 符号、linker 内部符号和标准 libc 符号三级回退
 use crate::log;
-use once_cell::sync::OnceCell;
 use std::ffi::{CStr, c_char, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::monitor;
 
 // 缓存各 dlopen/dlclose 变体的真实函数地址，首次调用时通过 RTLD_NEXT 解析
-static REAL_DLOPEN: OnceCell<usize> = OnceCell::new();
-static REAL_ANDROID_DLOPEN_EXT: OnceCell<usize> = OnceCell::new();
-static REAL_DLCLOSE: OnceCell<usize> = OnceCell::new();
-static REAL_LOADER_DLOPEN: OnceCell<usize> = OnceCell::new();
-static REAL_LOADER_ANDROID_DLOPEN_EXT: OnceCell<usize> = OnceCell::new();
-static REAL_LOADER_DLCLOSE: OnceCell<usize> = OnceCell::new();
-static REAL_LINKER_DLOPEN_EXT: OnceCell<usize> = OnceCell::new();
-static REAL_LINKER_DO_DLOPEN: OnceCell<usize> = OnceCell::new();
-static REAL_LINKER_G_DL_MUTEX: OnceCell<usize> = OnceCell::new();
-static REAL_LINKER_GET_ERROR_BUFFER: OnceCell<usize> = OnceCell::new();
+static REAL_DLOPEN: SymbolAddress = SymbolAddress::new();
+static REAL_ANDROID_DLOPEN_EXT: SymbolAddress = SymbolAddress::new();
+static REAL_DLCLOSE: SymbolAddress = SymbolAddress::new();
+static REAL_LOADER_DLOPEN: SymbolAddress = SymbolAddress::new();
+static REAL_LOADER_ANDROID_DLOPEN_EXT: SymbolAddress = SymbolAddress::new();
+static REAL_LOADER_DLCLOSE: SymbolAddress = SymbolAddress::new();
+static REAL_LINKER_DLOPEN_EXT: SymbolAddress = SymbolAddress::new();
+static REAL_LINKER_DO_DLOPEN: SymbolAddress = SymbolAddress::new();
+static REAL_LINKER_G_DL_MUTEX: SymbolAddress = SymbolAddress::new();
+static REAL_LINKER_GET_ERROR_BUFFER: SymbolAddress = SymbolAddress::new();
 const RTLD_NEXT_FALLBACK: *mut c_void = (-1isize) as *mut c_void;
+
+struct SymbolAddress(AtomicUsize);
+
+impl SymbolAddress {
+    const UNRESOLVED: usize = usize::MAX;
+
+    const fn new() -> Self {
+        Self(AtomicUsize::new(Self::UNRESOLVED))
+    }
+
+    // 解析完成后发布地址，fork 继承的缓存始终为空或完整地址。
+    fn get_or_init(&self, resolve: impl FnOnce() -> usize) -> usize {
+        let current = self.0.load(Ordering::Acquire);
+        if current != Self::UNRESOLVED {
+            return current;
+        }
+        let resolved = resolve();
+        match self.0.compare_exchange(
+            Self::UNRESOLVED,
+            resolved,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => resolved,
+            Err(published) => published,
+        }
+    }
+}
+
+// 安装任何 loader proxy 前完成解析，子进程直接继承已发布地址。
+pub(super) fn prime_for_fork() {
+    let symbols = [
+        (&REAL_DLOPEN, c"dlopen"),
+        (&REAL_ANDROID_DLOPEN_EXT, c"android_dlopen_ext"),
+        (&REAL_DLCLOSE, c"dlclose"),
+        (&REAL_LOADER_DLOPEN, c"__loader_dlopen"),
+        (
+            &REAL_LOADER_ANDROID_DLOPEN_EXT,
+            c"__loader_android_dlopen_ext",
+        ),
+        (&REAL_LOADER_DLCLOSE, c"__loader_dlclose"),
+        (
+            &REAL_LINKER_DLOPEN_EXT,
+            c"__dl__ZL10dlopen_extPKciPK17android_dlextinfoPv",
+        ),
+        (
+            &REAL_LINKER_DO_DLOPEN,
+            c"__dl__Z9do_dlopenPKciPK17android_dlextinfoPv",
+        ),
+        (
+            &REAL_LINKER_GET_ERROR_BUFFER,
+            c"__dl__Z23linker_get_error_bufferv",
+        ),
+    ];
+    for (address, name) in symbols {
+        address.get_or_init(|| unsafe { resolve_symbol(name) });
+    }
+    REAL_LINKER_G_DL_MUTEX
+        .get_or_init(|| unsafe { resolve_symbols(&[c"__dl__ZL10g_dl_mutex", c"__dl_g_dl_mutex"]) });
+}
 
 pub(super) unsafe fn call_dlopen_fn(
     addr: usize,
@@ -117,6 +177,7 @@ unsafe fn call_linker_dlopen_ext_fn(
 }
 
 unsafe fn resolve_symbol(name: &CStr) -> usize {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     let ptr = libc::dlsym(RTLD_NEXT_FALLBACK, name.as_ptr());
     ptr as usize
 }
@@ -133,7 +194,7 @@ unsafe fn resolve_symbols(names: &[&CStr]) -> usize {
 
 // 获取 linker 内部错误缓冲区内容，用于 do_dlopen 回退失败时的诊断
 unsafe fn linker_error_message() -> Option<String> {
-    let get_error_buffer = *REAL_LINKER_GET_ERROR_BUFFER
+    let get_error_buffer = REAL_LINKER_GET_ERROR_BUFFER
         .get_or_init(|| unsafe { resolve_symbol(c"__dl__Z23linker_get_error_bufferv") });
     if get_error_buffer == 0 {
         return None;
@@ -154,7 +215,7 @@ unsafe fn linker_error_message() -> Option<String> {
 
 pub(super) unsafe fn call_real_dlopen(filename: *const c_char, flags: libc::c_int) -> *mut c_void {
     let name = c"dlopen";
-    let addr = *REAL_DLOPEN.get_or_init(|| unsafe { resolve_symbol(name) });
+    let addr = REAL_DLOPEN.get_or_init(|| unsafe { resolve_symbol(name) });
     call_dlopen_fn(addr, filename, flags)
 }
 
@@ -165,7 +226,7 @@ pub(super) unsafe fn call_real_dlopen_with_caller(
     extinfo: *const c_void,
     caller_addr: *const c_void,
 ) -> *mut c_void {
-    let linker_dlopen_ext = *REAL_LINKER_DLOPEN_EXT.get_or_init(|| unsafe {
+    let linker_dlopen_ext = REAL_LINKER_DLOPEN_EXT.get_or_init(|| unsafe {
         resolve_symbol(c"__dl__ZL10dlopen_extPKciPK17android_dlextinfoPv")
     });
     if linker_dlopen_ext != 0 {
@@ -177,10 +238,10 @@ pub(super) unsafe fn call_real_dlopen_with_caller(
         }
     }
 
-    let linker_do_dlopen = *REAL_LINKER_DO_DLOPEN
+    let linker_do_dlopen = REAL_LINKER_DO_DLOPEN
         .get_or_init(|| unsafe { resolve_symbol(c"__dl__Z9do_dlopenPKciPK17android_dlextinfoPv") });
     if linker_do_dlopen != 0 {
-        let linker_mutex = *REAL_LINKER_G_DL_MUTEX.get_or_init(|| unsafe {
+        let linker_mutex = REAL_LINKER_G_DL_MUTEX.get_or_init(|| unsafe {
             resolve_symbols(&[c"__dl__ZL10g_dl_mutex", c"__dl_g_dl_mutex"])
         });
         if linker_mutex != 0 {
@@ -216,13 +277,13 @@ pub(super) unsafe fn call_real_android_dlopen_ext(
     extinfo: *const c_void,
 ) -> *mut c_void {
     let name = c"android_dlopen_ext";
-    let addr = *REAL_ANDROID_DLOPEN_EXT.get_or_init(|| unsafe { resolve_symbol(name) });
+    let addr = REAL_ANDROID_DLOPEN_EXT.get_or_init(|| unsafe { resolve_symbol(name) });
     call_android_dlopen_ext_fn(addr, filename, flags, extinfo)
 }
 
 pub(super) unsafe fn call_real_dlclose(handle: *mut c_void) -> libc::c_int {
     let name = c"dlclose";
-    let addr = *REAL_DLCLOSE.get_or_init(|| unsafe { resolve_symbol(name) });
+    let addr = REAL_DLCLOSE.get_or_init(|| unsafe { resolve_symbol(name) });
     call_dlclose_fn(addr, handle)
 }
 
@@ -233,7 +294,7 @@ pub(super) unsafe fn call_real_loader_dlopen(
     caller_addr: *const c_void,
 ) -> *mut c_void {
     let name = c"__loader_dlopen";
-    let addr = *REAL_LOADER_DLOPEN.get_or_init(|| unsafe { resolve_symbol(name) });
+    let addr = REAL_LOADER_DLOPEN.get_or_init(|| unsafe { resolve_symbol(name) });
     if addr != 0 {
         let handle = call_loader_dlopen_fn(addr, filename, flags, caller_addr);
         if !handle.is_null() {
@@ -254,7 +315,7 @@ pub(super) unsafe fn call_real_loader_android_dlopen_ext(
     caller_addr: *const c_void,
 ) -> *mut c_void {
     let name = c"__loader_android_dlopen_ext";
-    let addr = *REAL_LOADER_ANDROID_DLOPEN_EXT.get_or_init(|| unsafe { resolve_symbol(name) });
+    let addr = REAL_LOADER_ANDROID_DLOPEN_EXT.get_or_init(|| unsafe { resolve_symbol(name) });
     if addr != 0 {
         let handle = call_loader_android_dlopen_ext_fn(addr, filename, flags, extinfo, caller_addr);
         if !handle.is_null() {
@@ -270,7 +331,7 @@ pub(super) unsafe fn call_real_loader_android_dlopen_ext(
 
 pub(super) unsafe fn call_real_loader_dlclose(handle: *mut c_void) -> libc::c_int {
     let name = c"__loader_dlclose";
-    let addr = *REAL_LOADER_DLCLOSE.get_or_init(|| unsafe { resolve_symbol(name) });
+    let addr = REAL_LOADER_DLCLOSE.get_or_init(|| unsafe { resolve_symbol(name) });
     if addr != 0 {
         let result = call_loader_dlclose_fn(addr, handle);
         if result == 0 {

@@ -3,7 +3,7 @@
 
 use std::ffi::{CStr, c_void};
 use std::ptr;
-use std::sync::OnceLock;
+use std::sync::atomic::AtomicPtr;
 
 use super::slot;
 use super::{
@@ -14,14 +14,17 @@ use super::{
 
 // 延迟解析并缓存 sigchain API 函数指针
 fn sigchain_api_fns() -> Option<&'static SigchainApiFns> {
-    static SIGCHAIN_API_FNS: OnceLock<Option<SigchainApiFns>> = OnceLock::new();
-    SIGCHAIN_API_FNS
-        .get_or_init(resolve_sigchain_api_fns)
-        .as_ref()
+    static SIGCHAIN_API_FNS: AtomicPtr<Option<SigchainApiFns>> = AtomicPtr::new(ptr::null_mut());
+    super::published_functions(&SIGCHAIN_API_FNS, resolve_sigchain_api_fns).as_ref()
+}
+
+pub(super) fn prime() {
+    let _ = sigchain_api_fns();
 }
 
 // 解析 sigchain API：需要 add 和 remove 两个必选符号，ensure_front 可选
 fn resolve_sigchain_api_fns() -> Option<SigchainApiFns> {
+    let _loader_call = crate::runtime::LoaderCall::enter();
     let add_symbol = resolve_sigchain_symbol_candidates(&[
         c"AddSpecialSignalHandlerFn",
         c"AddSpecialSignalHandler",

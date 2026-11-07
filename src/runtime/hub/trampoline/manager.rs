@@ -1,86 +1,49 @@
-// Trampoline 内存页池管理器
-// 通过 mmap 分配可执行页，以位图追踪槽位占用，支持延迟回收和空闲页释放
+// 跳板页面整体初始化并设为 RX 后再发布，入口内容与地址保持稳定。
+use crate::android::memory;
 use crate::errno::Errno;
-use crate::runtime::state::MutexPoisonRecover;
-use once_cell::sync::Lazy;
+use crate::runtime::hub::{Hub, stack};
+use crate::runtime::state::{MutexPoisonRecover, PidLocal};
 use std::ptr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64};
 
-use super::{TRAMPO_DELAY_SEC, now_sec, trampo_size};
+use super::{init_trampo, trampo_size};
 
-// 单个内存页的管理信息
-struct TrampoPage {
-    ptr: usize,
-    // 位图标记槽位占用状态
-    flags: Vec<u32>,
-    // 每个槽位的释放时间戳，用于冷却期判定
-    timestamps: Vec<u64>,
-}
-
-// 页池管理器
 struct TrampoMgr {
     page_size: usize,
     trampo_size: usize,
-    pages: Vec<TrampoPage>,
+    unused_hubs: Vec<usize>,
 }
 
 impl TrampoMgr {
     fn new() -> Self {
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
-        let page_size = if page_size == 0 { 4096 } else { page_size };
-        let trampo_size = trampo_size();
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         Self {
-            page_size,
-            trampo_size,
-            pages: Vec::new(),
+            page_size: if page_size > 0 {
+                page_size as usize
+            } else {
+                4096
+            },
+            trampo_size: trampo_size(),
+            unused_hubs: Vec::new(),
         }
     }
 
-    fn count_per_page(&self) -> usize {
-        // 每个 trampoline 独占一页，避免 RX/RW 切换影响同页的其他活跃 trampoline。
-        1
+    fn alloc(&mut self, orig_addr: usize) -> Result<*mut Hub, Errno> {
+        if self.unused_hubs.is_empty() {
+            self.prepare_page()?;
+        }
+        let hub = self.unused_hubs.pop().ok_or(Errno::NewTrampo)? as *mut Hub;
+        // 发布前设置 Hub 的原函数地址，代码页保持 RX。
+        unsafe { (*hub).orig_addr = orig_addr };
+        Ok(hub)
     }
 
-    // 优先复用已有页中的空闲槽位，无可用时 mmap 新页
-    fn alloc(&mut self) -> Result<usize, Errno> {
-        let count = self.count_per_page();
+    fn prepare_page(&mut self) -> Result<(), Errno> {
+        let count = self.page_size.checked_div(self.trampo_size).unwrap_or(0);
         if count == 0 {
             return Err(Errno::NewTrampo);
         }
-        let now = now_sec();
-        self.reclaim_idle_pages(now);
-
-        for page in &mut self.pages {
-            for idx in 0..count {
-                let flags_idx = idx / 32;
-                let mask = 1u32 << (idx % 32);
-                if page.flags[flags_idx] & mask != 0 {
-                    continue;
-                }
-                let ts = page.timestamps[idx];
-                if ts != 0 && now.saturating_sub(ts) <= TRAMPO_DELAY_SEC {
-                    continue;
-                }
-
-                let mprotect_result = unsafe {
-                    libc::mprotect(
-                        page.ptr as *mut libc::c_void,
-                        self.page_size,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                    )
-                };
-                if mprotect_result != 0 {
-                    continue;
-                }
-                page.flags[flags_idx] |= mask;
-                let addr = page.ptr + idx * self.trampo_size;
-                unsafe {
-                    ptr::write_bytes(addr as *mut u8, 0, self.trampo_size);
-                }
-                return Ok(addr);
-            }
-        }
-
         let raw = unsafe {
             libc::mmap(
                 ptr::null_mut(),
@@ -95,83 +58,54 @@ impl TrampoMgr {
             return Err(Errno::NewTrampo);
         }
 
-        let mut page = TrampoPage {
-            ptr: raw as usize,
-            flags: vec![0u32; count.div_ceil(32)],
-            timestamps: vec![0u64; count],
-        };
-        page.flags[0] |= 1;
-        let addr = page.ptr;
-        self.pages.push(page);
-        Ok(addr)
-    }
-
-    // 标记槽位为空闲并记录释放时间戳，随后尝试回收空闲页
-    fn free(&mut self, trampo: usize) {
-        let count = self.count_per_page();
-        let now = now_sec();
-
-        for page in &mut self.pages {
-            if trampo < page.ptr || trampo >= page.ptr + self.page_size {
-                continue;
-            }
-            let idx = (trampo - page.ptr) / self.trampo_size;
-            if idx >= count {
-                continue;
-            }
-            let flags_idx = idx / 32;
-            let mask = 1u32 << (idx % 32);
-            page.flags[flags_idx] &= !mask;
-            page.timestamps[idx] = now;
-            break;
-        }
-
-        self.reclaim_idle_pages(now);
-    }
-
-    // 回收全部槽位空闲且超过冷却期的页，至少保留一页
-    fn reclaim_idle_pages(&mut self, now: u64) {
-        if self.pages.len() <= 1 {
-            return;
-        }
-
-        let mut idx = 0;
-        while idx < self.pages.len() {
-            if self.pages.len() <= 1 {
-                break;
-            }
-
-            let should_remove = {
-                let page = &self.pages[idx];
-                if !page.flags.iter().all(|value| *value == 0) {
-                    false
-                } else {
-                    let last_free_ts = page.timestamps.iter().copied().max().unwrap_or(0);
-                    last_free_ts != 0 && now.saturating_sub(last_free_ts) > TRAMPO_DELAY_SEC
-                }
-            };
-
-            if should_remove {
-                let page = self.pages.swap_remove(idx);
+        let mut hubs = Vec::with_capacity(count);
+        let result = (|| {
+            for index in 0..count {
+                let trampo = raw as usize + index * self.trampo_size;
+                let hub = Box::new(Hub {
+                    orig_addr: 0,
+                    trampo,
+                    head: AtomicPtr::new(ptr::null_mut()),
+                    acquiring: AtomicU64::new(0),
+                    published: AtomicBool::new(false),
+                });
                 unsafe {
-                    libc::munmap(page.ptr as *mut libc::c_void, self.page_size);
+                    init_trampo(
+                        trampo,
+                        ptr::from_ref(&*hub) as usize,
+                        stack::hub_push_stack as *const () as usize,
+                        stack::hub_pop_stack as *const () as usize,
+                    )?;
                 }
-                continue;
+                hubs.push(hub);
             }
-
-            idx += 1;
+            memory::flush_instruction_cache_range(raw as usize, raw as usize + self.page_size);
+            memory::set_addr_protect(
+                raw as usize,
+                memory::PROT_READ_FLAG | memory::PROT_EXEC_FLAG,
+            )
+            .map_err(|_| Errno::InitErrTrampo)
+        })();
+        if let Err(err) = result {
+            unsafe { libc::munmap(raw, self.page_size) };
+            return Err(err);
         }
+        self.unused_hubs
+            .extend(hubs.into_iter().map(|hub| Box::into_raw(hub) as usize));
+        Ok(())
     }
 }
 
-static TRAMPO_MGR: Lazy<Mutex<TrampoMgr>> = Lazy::new(|| Mutex::new(TrampoMgr::new()));
+static TRAMPO_MGR: PidLocal<Mutex<TrampoMgr>> = PidLocal::new(|| Mutex::new(TrampoMgr::new()));
 
-pub(super) fn alloc_trampo() -> Result<usize, Errno> {
-    let mut mgr = TRAMPO_MGR.lock_or_poison();
-    mgr.alloc()
+pub(super) fn alloc_hub(orig_addr: usize) -> Result<*mut Hub, Errno> {
+    TRAMPO_MGR.get().lock_or_poison().alloc(orig_addr)
 }
 
-pub(super) fn free_trampo(trampo: usize) {
-    let mut mgr = TRAMPO_MGR.lock_or_poison();
-    mgr.free(trampo);
+pub(super) fn discard_unpublished_hub(hub_ptr: *mut Hub) {
+    TRAMPO_MGR
+        .get()
+        .lock_or_poison()
+        .unused_hubs
+        .push(hub_ptr as usize);
 }

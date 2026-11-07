@@ -5,11 +5,12 @@ use crate::errno::Errno;
 use crate::log;
 use crate::version;
 
-use super::super::cfi;
 use super::super::state::GLOBAL;
 use super::super::thread_state;
 use super::monitor;
-use crate::runtime::state::{MutexPoisonRecover, set_install_pid};
+use crate::runtime::state::set_install_pid;
+use crate::runtime::fork;
+use std::sync::atomic::Ordering;
 
 pub(super) fn get_version() -> String {
     version::version_str_full()
@@ -18,6 +19,7 @@ pub(super) fn get_version() -> String {
 // 反查自身模块加载基址，用于按基址忽略自身
 // 与路径无关，覆盖 memfd 匿名加载（如 neozygisk）场景
 fn resolve_self_base_addr() -> usize {
+    let _loader_call = fork::LoaderCall::enter();
     let probe = resolve_self_base_addr as *const std::ffi::c_void;
     let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
     if unsafe { libc::dladdr(probe, &mut info) } == 0 {
@@ -27,57 +29,72 @@ fn resolve_self_base_addr() -> usize {
 }
 
 pub(super) fn init(mode: HookMode, debug: bool) -> Errno {
-    let mut should_start_monitor = false;
-    let status = {
-        let mut state = GLOBAL.state.lock_or_poison();
-        if state.init.status != Errno::Uninit {
-            return state.init.status;
-        }
-
-        state.debug = debug;
-        log::set_debug_enabled(debug);
-        state.init.mode = mode;
-        state.self_base_addr = resolve_self_base_addr();
-        let pid = unsafe { libc::getpid() };
-        state.process_id = pid as usize;
-        set_install_pid(pid);
-        if !thread_state::init_thread_state_key() {
-            log::warn(format_args!(
-                "线程状态 key 初始化失败，后续将退化到无栈路径"
-            ));
-        }
-        if !thread_state::init_current_thread_state() {
-            log::warn(format_args!("线程状态绑定失败，后续将退化到无栈路径"));
-        }
-        state.init.status = match signal_guard::add_handler() {
-            Ok(()) => Errno::Ok,
-            Err(_) => Errno::InitErrSig,
-        };
-        if state.init.status == Errno::Ok {
-            state.init.status = cfi::disable_slowpath();
-        }
-
-        if state.init.status == Errno::Ok && mode == HookMode::Automatic {
-            should_start_monitor = true;
-        }
-
-        state.init.status
-    };
-
-    if status != Errno::Ok {
-        return status;
+    if let Err(error) = fork::check_management() {
+        return error;
     }
-
-    if should_start_monitor {
-        monitor::start_monitor_thread();
-        let state = GLOBAL.state.lock_or_poison();
-        if state.init.status != Errno::Ok {
-            return state.init.status;
+    let runtime = &*GLOBAL;
+    let source = runtime.snapshot();
+    if source.clearing {
+        return Errno::Busy;
+    }
+    if source.init.status == Errno::Ok {
+        if source.init.mode == HookMode::Automatic {
+            monitor::start_monitor_thread();
+            monitor::install_auto_loader_monitor_hooks();
         }
-        drop(state);
+        return Errno::Ok;
+    }
+    if runtime.initializing.swap(true, Ordering::AcqRel) {
+        return Errno::Busy;
+    }
+    let status = initialize_runtime(runtime, mode, debug);
+    runtime.initializing.store(false, Ordering::Release);
+    if status == Errno::Ok && mode == HookMode::Automatic {
+        monitor::start_monitor_thread();
         monitor::install_auto_loader_monitor_hooks();
     }
+    status
+}
 
-    log::info(format_args!("{}", version::version_str_full()));
-    Errno::Ok
+fn initialize_runtime(runtime: &super::super::state::ProcessRuntime, mode: HookMode, debug: bool) -> Errno {
+    if let Err(error) = fork::register_handlers() {
+        return error;
+    }
+    if !thread_state::init_thread_state_key() || !thread_state::init_current_thread_state() {
+        return Errno::InitErrSafe;
+    }
+    super::monitor_calls::prime_for_fork();
+    signal_guard::prime_process_state();
+    if let Err(error) = signal_guard::add_handler() {
+        return error;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let source = runtime.snapshot();
+        let prepared = match super::super::refresh::prepare_cfi_init(&source) {
+            Ok(prepared) => prepared,
+            Err(error) => return error,
+        };
+        let result = super::transaction::commit(runtime, &source, prepared);
+        if result.status != Errno::Ok {
+            return result.status;
+        }
+    }
+    let self_base_addr = resolve_self_base_addr();
+    if !runtime.is_current() {
+        return Errno::ForkContextUnavailable;
+    }
+    let status = runtime.update(|state| {
+        state.debug = debug;
+        state.init.mode = mode;
+        state.init.status = Errno::Ok;
+        state.self_base_addr = self_base_addr;
+        Errno::Ok
+    });
+    if status == Errno::Ok {
+        set_install_pid(runtime.pid);
+        log::set_debug_enabled(debug);
+        log::info(format_args!("{}", version::version_str_full()));
+    }
+    status
 }

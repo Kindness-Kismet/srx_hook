@@ -1,8 +1,21 @@
-use once_cell::sync::OnceCell;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod trampoline;
+pub(crate) use trampoline::{
+    after_fork_child, has_active_trampolines, has_trampoline_frame, trampoline_enter,
+    trampoline_leave,
+};
+
+pub(crate) fn active_trampoline_count() -> usize {
+    trampoline::active_trampoline_count()
+}
+
+pub(crate) fn current_active_trampoline_count() -> usize {
+    trampoline::current_active_trampoline_count()
+}
 
 pub(crate) const HUB_STACK_CAP: usize = 32;
 pub(crate) const PROXY_STACK_CAP: usize = 32;
@@ -25,7 +38,7 @@ pub(crate) struct ProxyFrame {
     pub(crate) stack_sp: usize,
 }
 
-// 固定容量栈，运行期不扩容
+// 运行期间使用固定容量的栈。
 pub(crate) struct FixedStack<T: Copy, const N: usize> {
     len: usize,
     items: [MaybeUninit<T>; N],
@@ -143,7 +156,7 @@ struct ThreadStateKeys {
     reserved_key: libc::pthread_key_t,
 }
 
-static THREAD_STATE_KEYS: OnceCell<ThreadStateKeys> = OnceCell::new();
+static THREAD_STATE_KEYS: AtomicU64 = AtomicU64::new(0);
 static THREAD_STATE_KEY_INIT_FAIL: AtomicU64 = AtomicU64::new(0);
 static THREAD_STATE_BIND_FAIL: AtomicU64 = AtomicU64::new(0);
 static THREAD_STATE_ACCESS_FAIL: AtomicU64 = AtomicU64::new(0);
@@ -155,10 +168,15 @@ type ThreadStatePtr = *mut ThreadRuntimeState;
 
 const RESERVED_SENTINEL: *const c_void = ptr::dangling::<c_void>();
 
-// fork 子进程走无状态旁路，避免在子进程热路径触发额外分配
-#[inline]
-pub(crate) fn should_skip_thread_state() -> bool {
-    crate::runtime::state::is_forked_child()
+fn thread_state_keys() -> Option<ThreadStateKeys> {
+    let word = THREAD_STATE_KEYS.load(Ordering::Acquire);
+    if word == 0 {
+        return None;
+    }
+    Some(ThreadStateKeys {
+        state_key: ((word >> 32) as u32 - 1) as libc::pthread_key_t,
+        reserved_key: (word as u32 - 1) as libc::pthread_key_t,
+    })
 }
 
 // pthread key 析构：线程退出时释放线程状态，并设置析构保护标记
@@ -167,7 +185,7 @@ unsafe extern "C" fn destroy_thread_state(raw_ptr: *mut c_void) {
         return;
     }
 
-    if let Some(keys) = THREAD_STATE_KEYS.get() {
+    if let Some(keys) = thread_state_keys() {
         unsafe {
             let _ = libc::pthread_setspecific(keys.reserved_key, RESERVED_SENTINEL);
         }
@@ -177,7 +195,7 @@ unsafe extern "C" fn destroy_thread_state(raw_ptr: *mut c_void) {
         drop(Box::from_raw(raw_ptr as ThreadStatePtr));
     }
 
-    if let Some(keys) = THREAD_STATE_KEYS.get() {
+    if let Some(keys) = thread_state_keys() {
         unsafe {
             let _ = libc::pthread_setspecific(keys.state_key, ptr::null());
         }
@@ -210,8 +228,8 @@ fn report_thread_state_key_init_fail(phase: &str, ret: i32) {
 }
 
 fn ensure_thread_state_keys() -> Option<ThreadStateKeys> {
-    if let Some(keys) = THREAD_STATE_KEYS.get() {
-        return Some(*keys);
+    if let Some(keys) = thread_state_keys() {
+        return Some(keys);
     }
 
     let mut state_key: libc::pthread_key_t = 0;
@@ -237,18 +255,18 @@ fn ensure_thread_state_keys() -> Option<ThreadStateKeys> {
         return None;
     }
 
-    let keys = ThreadStateKeys {
-        state_key,
-        reserved_key,
-    };
-    if THREAD_STATE_KEYS.set(keys).is_err() {
+    let word = (u64::from(state_key as u32 + 1) << 32) | u64::from(reserved_key as u32 + 1);
+    if THREAD_STATE_KEYS
+        .compare_exchange(0, word, Ordering::Release, Ordering::Relaxed)
+        .is_err()
+    {
         unsafe {
             let _ = libc::pthread_key_delete(state_key);
             let _ = libc::pthread_key_delete(reserved_key);
         }
     }
 
-    THREAD_STATE_KEYS.get().copied()
+    thread_state_keys()
 }
 
 fn is_thread_state_reserved(keys: ThreadStateKeys) -> bool {
@@ -299,9 +317,13 @@ fn get_or_init_thread_state_ptr(keys: ThreadStateKeys) -> Option<ThreadStatePtr>
     Some(raw_ptr)
 }
 
-// 仅初始化 key，不创建线程实例
+// 预先准备 key，线程实例在首次访问时创建。
 pub(crate) fn init_thread_state_key() -> bool {
-    ensure_thread_state_keys().is_some()
+    if ensure_thread_state_keys().is_none() || !trampoline::init_keys() {
+        return false;
+    }
+    after_fork_child();
+    true
 }
 
 // 确保当前线程已具备线程状态
@@ -314,22 +336,18 @@ pub(crate) fn with_thread_state<R, F>(f: F) -> Option<R>
 where
     F: FnOnce(&mut ThreadRuntimeState) -> R,
 {
-    if should_skip_thread_state() {
-        return None;
-    }
-
     let keys = ensure_thread_state_keys()?;
     let raw_ptr = get_or_init_thread_state_ptr(keys)?;
     let state = unsafe { &mut *raw_ptr };
     Some(f(state))
 }
 
-// 记录线程状态不可用，避免每次热路径刷屏
+// 采样记录线程状态访问失败。
 pub(crate) fn report_thread_state_unavailable(site: &str) {
     let count = THREAD_STATE_ACCESS_FAIL.fetch_add(1, Ordering::Relaxed) + 1;
     if should_log_every_step(count) {
         crate::log::warn(format_args!(
-            "线程状态不可用: site={} 次数={} fork_child={}",
+            "线程状态尚未建立: site={} 次数={} fork_child={}",
             site,
             count,
             is_fork_child_text()
