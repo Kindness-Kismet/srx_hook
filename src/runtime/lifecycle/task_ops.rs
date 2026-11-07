@@ -51,7 +51,7 @@ fn register_task(
     }
     let stub = runtime
         .next_stub
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |next| {
             next.checked_add(1)
         })
         .map_err(|_| Errno::InvalidArg)?;
