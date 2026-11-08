@@ -1,12 +1,13 @@
 // 生命周期管理模块，作为 runtime 子模块的统一入口
 // 将 hook/unhook/refresh/控制/回调等操作分发到各子模块
 use crate::api::{
-    CallerAllowFilter, HookMode, HookStub, HookedCallback, ModuleIdentity, PostDlopenCallback,
-    PreDlopenCallback, RefreshError,
+    CallerAllowFilter, HookBatchError, HookMode, HookRequest, HookStub, HookedCallback,
+    ModuleIdentity, PostDlopenCallback, PreDlopenCallback, RefreshError,
 };
 use crate::errno::Errno;
 use std::ffi::{c_char, c_void};
 
+mod batch_ops;
 mod dlopen_callbacks;
 mod monitor;
 mod monitor_calls;
@@ -116,6 +117,12 @@ pub(super) fn hook_all(
     hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
         .or_else(|error| error.stub.ok_or(error))
         .ok()
+}
+
+pub(super) fn hook_batch_checked(
+    requests: &[HookRequest<'_>],
+) -> Result<Vec<HookStub>, HookBatchError> {
+    batch_ops::register(requests)
 }
 
 pub(super) fn hook_all_checked(

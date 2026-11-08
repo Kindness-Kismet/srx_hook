@@ -1,7 +1,7 @@
 // runtime 模块入口，将内部子模块的功能统一暴露为 crate 级公共接口
 use crate::api::{
-    CallerAllowFilter, HookMode, HookStub, HookedCallback, ModuleIdentity, PostDlopenCallback,
-    PreDlopenCallback,
+    CallerAllowFilter, HookBatchError, HookMode, HookRequest, HookStub, HookedCallback,
+    ModuleIdentity, PostDlopenCallback, PreDlopenCallback,
 };
 use crate::errno::Errno;
 use std::ffi::c_void;
@@ -130,6 +130,12 @@ pub(crate) fn hook_all(
     hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
         .or_else(|error| error.stub.ok_or(error))
         .ok()
+}
+
+pub(crate) fn hook_batch_checked(
+    requests: &[HookRequest<'_>],
+) -> Result<Vec<HookStub>, HookBatchError> {
+    lifecycle::hook_batch_checked(requests)
 }
 
 pub(crate) fn hook_all_checked(

@@ -5,6 +5,44 @@ use std::ffi::{c_char, c_void};
 // hook 任务的唯一标识，由运行时分配
 pub type HookStub = u64;
 
+#[derive(Clone, Copy)]
+pub enum HookCaller<'a> {
+    All,
+    Single(&'a str),
+    Partial {
+        filter: CallerAllowFilter,
+        arg: *mut c_void,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub struct HookRequest<'a> {
+    pub caller: HookCaller<'a>,
+    pub callee_path_name: Option<&'a str>,
+    pub sym_name: &'a str,
+    pub new_func: *mut c_void,
+    pub hooked: Option<HookedCallback>,
+    pub hooked_arg: *mut c_void,
+}
+
+#[derive(Debug)]
+pub struct HookBatchError {
+    pub status: Errno,
+    // 已发布任务按请求顺序返回，调用方可在部分应用失败后逐项卸载。
+    pub stubs: Vec<HookStub>,
+    pub errors: Vec<RefreshError>,
+}
+
+impl From<Errno> for HookBatchError {
+    fn from(status: Errno) -> Self {
+        Self {
+            status,
+            stubs: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct HookError {
     pub status: Errno,
@@ -259,6 +297,15 @@ pub fn hook_all_checked(
         return Err(Errno::InitErrSafe.into());
     }
     runtime::hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
+}
+
+// 全部参数先校验；Automatic 统一应用，Manual 统一入队后由 refresh 生效。
+pub fn hook_batch_checked(requests: &[HookRequest<'_>]) -> Result<Vec<HookStub>, HookBatchError> {
+    runtime::check_management()?;
+    if in_external_callback() {
+        return Err(Errno::InitErrSafe.into());
+    }
+    runtime::hook_batch_checked(requests)
 }
 
 // 卸载指定 hook 任务，保留同一调用点的其余任务。
