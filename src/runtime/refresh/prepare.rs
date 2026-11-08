@@ -1,6 +1,7 @@
 // loader 临界区只采集模块数据，用户过滤和新状态构造在租期之外进行。
 use crate::android::memory::MemoryProtections;
 use crate::api::HookStub;
+use crate::elf::Elf;
 use crate::errno::Errno;
 use crate::runtime::hub;
 use crate::runtime::rules::should_ignore;
@@ -10,8 +11,8 @@ use crate::runtime::state::{
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::lease::{self, LoaderEpoch};
-use super::matcher::{is_task_match_caller, resolve_callee_addrs};
-use super::module_registry::{module_key, prune_dead_single_task_targets};
+use super::matcher::{CalleeResolve, is_task_match_caller, resolve_callee_addrs};
+use super::module_registry::{module_instance_key, module_key, prune_dead_single_task_targets};
 #[cfg(target_arch = "aarch64")]
 use super::transaction::InstructionPatch;
 use super::transaction::{AuxiliaryPatch, ObservedSlot, PreparedRefresh};
@@ -27,6 +28,20 @@ struct TaskSlots {
     task: Task,
     module: ModuleInfo,
     slots: Result<Vec<SlotKey>, Errno>,
+}
+
+struct ModuleCapture {
+    elf: Result<Elf, Errno>,
+    cfi: Option<Result<(), Errno>>,
+}
+
+// ELF 指针、CFI 观察结果和权限快照只在本次 loader 租期内共享。
+#[derive(Default)]
+struct SlotCapture {
+    modules: BTreeMap<usize, ModuleCapture>,
+    protections: MemoryProtections,
+    observed: BTreeMap<SlotKey, ObservedSlot>,
+    auxiliary: BTreeMap<usize, AuxiliaryPatch>,
 }
 
 pub(in crate::runtime) fn prepare_refresh(
@@ -153,7 +168,7 @@ fn capture_cfi_instructions(snapshot: &ModuleSnapshot) -> Result<Vec<Instruction
             .cloned()
             .collect();
         let addresses = crate::runtime::cfi::global_patch_addresses(&leased_modules)?;
-        let protections = MemoryProtections::read()?;
+        let protections = MemoryProtections::default();
         let mut instructions = Vec::new();
         for address in addresses {
             let size = std::mem::size_of::<u32>();
@@ -254,6 +269,14 @@ fn select_tasks(
     target: Option<HookStub>,
 ) -> Vec<(Task, ModuleInfo)> {
     let mut approved = Vec::new();
+    let tasks: Vec<&Task> = match target {
+        Some(stub) => state.tasks.get(&stub).into_iter().collect(),
+        None => state
+            .task_order
+            .iter()
+            .filter_map(|stub| state.tasks.get(stub))
+            .collect(),
+    };
     for module in modules {
         if should_ignore(
             &module.pathname,
@@ -265,15 +288,9 @@ fn select_tasks(
         ) {
             continue;
         }
-        for stub in &state.task_order {
-            if target.is_some_and(|target| target != *stub) {
-                continue;
-            }
-            let Some(task) = state.tasks.get(stub) else {
-                continue;
-            };
+        for task in &tasks {
             if is_task_match_caller(task, module) {
-                approved.push((task.clone(), module.clone()));
+                approved.push(((*task).clone(), module.clone()));
             }
         }
     }
@@ -295,11 +312,10 @@ fn capture_slots(
         if epoch != snapshot.epoch {
             return Err(Errno::Busy);
         }
-        let protections = MemoryProtections::read()?;
-        let mut observed = BTreeMap::new();
+        let mut capture = SlotCapture::default();
         let alive: BTreeSet<String> = snapshot.modules.iter().map(module_key).collect();
         for key in state.slots.keys() {
-            let identity = super::module_registry::module_instance_key(
+            let identity = module_instance_key(
                 &key.caller_path_name,
                 key.caller_base_addr,
                 key.caller_instance_id,
@@ -308,7 +324,10 @@ fn capture_slots(
             if alive.contains(&identity)
                 && let Some(ranges) = snapshot.ranges.get(&key.caller_base_addr)
             {
-                observed.insert(key.clone(), observe_slot(key, ranges, &protections)?);
+                capture.observed.insert(
+                    key.clone(),
+                    observe_slot(key, ranges, &capture.protections)?,
+                );
             }
         }
         let leased_modules: Vec<ModuleInfo> = snapshot
@@ -319,22 +338,13 @@ fn capture_slots(
             .collect();
         let mut callee_cache = BTreeMap::new();
         let mut captured = Vec::new();
-        let mut auxiliary = BTreeMap::new();
         for (task, module) in approved {
             let slots = if let Some(ranges) = snapshot.ranges.get(&module.base_addr) {
                 let callee = callee_cache
                     .entry(task.stub)
                     .or_insert_with(|| resolve_callee_addrs(task, &leased_modules));
                 match callee {
-                    Ok(callee) => capture_task(
-                        task,
-                        module,
-                        callee,
-                        ranges,
-                        &protections,
-                        &mut observed,
-                        &mut auxiliary,
-                    ),
+                    Ok(callee) => capture_task(task, module, callee, ranges, &mut capture),
                     Err(error) => Err(*error),
                 }
             } else {
@@ -346,26 +356,43 @@ fn capture_slots(
                 slots,
             });
         }
-        Ok((captured, observed, auxiliary.into_values().collect()))
+        Ok((
+            captured,
+            capture.observed,
+            capture.auxiliary.into_values().collect(),
+        ))
     })
 }
 
 fn capture_task(
     task: &Task,
     module: &ModuleInfo,
-    callee: &super::matcher::CalleeResolve,
+    callee: &CalleeResolve,
     ranges: &[(usize, usize)],
-    protections: &MemoryProtections,
-    observed: &mut BTreeMap<SlotKey, ObservedSlot>,
-    auxiliary: &mut BTreeMap<usize, AuxiliaryPatch>,
+    capture: &mut SlotCapture,
 ) -> Result<Vec<SlotKey>, Errno> {
     if task.callee_path_name.is_some() && callee.addrs.as_ref().is_some_and(BTreeSet::is_empty) {
         return Ok(Vec::new());
     }
-    let elf = ops::init_elf_guard(module.base_addr, &module.pathname)?;
-    let slots = ops::find_slots_guard(&elf, &task.sym_name, callee.addrs.as_ref())?;
+    let entry = capture
+        .modules
+        .entry(module.base_addr)
+        .or_insert_with(|| ModuleCapture {
+            elf: ops::init_elf_guard(module.base_addr, &module.pathname),
+            cfi: None,
+        });
+    let elf = entry.elf.as_ref().map_err(|error| *error)?;
+    let slots = ops::find_slots_guard(elf, &task.sym_name, callee.addrs.as_ref())?;
     if !slots.is_empty() {
-        capture_cfi(&elf, module, ranges, protections, auxiliary)?;
+        (*entry.cfi.get_or_insert_with(|| {
+            capture_cfi(
+                elf,
+                module,
+                ranges,
+                &capture.protections,
+                &mut capture.auxiliary,
+            )
+        }))?;
     }
     let mut keys = Vec::with_capacity(slots.len());
     for address in slots {
@@ -376,8 +403,11 @@ fn capture_task(
             caller_namespace_id: module.namespace_id,
             slot_addr: address,
         };
-        if !observed.contains_key(&key) {
-            observed.insert(key.clone(), observe_slot(&key, ranges, protections)?);
+        if !capture.observed.contains_key(&key) {
+            capture.observed.insert(
+                key.clone(),
+                observe_slot(&key, ranges, &capture.protections)?,
+            );
         }
         keys.push(key);
     }
@@ -385,7 +415,7 @@ fn capture_task(
 }
 
 fn capture_cfi(
-    elf: &crate::elf::Elf,
+    elf: &Elf,
     module: &ModuleInfo,
     ranges: &[(usize, usize)],
     protections: &MemoryProtections,

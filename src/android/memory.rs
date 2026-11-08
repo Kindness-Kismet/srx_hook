@@ -2,6 +2,7 @@
 
 use crate::errno::Errno;
 use crate::log;
+use std::cell::OnceCell;
 use std::fs;
 use std::sync::atomic::{Ordering, fence};
 
@@ -16,12 +17,13 @@ struct ProtectionRange {
 }
 
 // 快照只在调用方持有的同一次 loader 租期内复用。
+#[derive(Default)]
 pub(crate) struct MemoryProtections {
-    ranges: Vec<ProtectionRange>,
+    ranges: OnceCell<Result<Vec<ProtectionRange>, Errno>>,
 }
 
 impl MemoryProtections {
-    pub(crate) fn read() -> Result<Self, Errno> {
+    fn read_ranges() -> Result<Vec<ProtectionRange>, Errno> {
         let content = fs::read("/proc/self/maps").map_err(|_| Errno::BadMaps)?;
         let mut ranges = Vec::new();
         for line in content.split(|byte| *byte == b'\n') {
@@ -29,16 +31,21 @@ impl MemoryProtections {
                 ranges.push(range);
             }
         }
-        Ok(Self { ranges })
+        Ok(ranges)
     }
 
     // maps 按地址递增；跨段取交集，空洞和共享映射不提供私有页权限。
     pub(crate) fn get(&self, addr: usize, len: usize) -> Result<u32, Errno> {
+        let ranges = self
+            .ranges
+            .get_or_init(Self::read_ranges)
+            .as_ref()
+            .map_err(|error| *error)?;
         let mut current = addr;
         let end = addr.saturating_add(len);
         let mut protection = PROT_READ_FLAG | PROT_WRITE_FLAG | PROT_EXEC_FLAG;
-        let first = self.ranges.partition_point(|range| range.end <= addr);
-        for range in &self.ranges[first..] {
+        let first = ranges.partition_point(|range| range.end <= addr);
+        for range in &ranges[first..] {
             if current < range.start {
                 return Err(Errno::SegvErr);
             }
@@ -81,7 +88,7 @@ fn parse_protection_range(line: &[u8]) -> Option<ProtectionRange> {
 
 // 路径提示不影响权限结果，按地址覆盖直接定位唯一映射。
 pub fn get_mem_protect(addr: usize, len: usize, _pathname: Option<&str>) -> Result<u32, Errno> {
-    MemoryProtections::read()?.get(addr, len)
+    MemoryProtections::default().get(addr, len)
 }
 
 // 查询单个指针大小地址的保护属性
