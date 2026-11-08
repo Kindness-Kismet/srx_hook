@@ -1,4 +1,5 @@
 // loader 临界区只采集模块数据，用户过滤和新状态构造在租期之外进行。
+use crate::android::memory::MemoryProtections;
 use crate::api::HookStub;
 use crate::errno::Errno;
 use crate::runtime::hub;
@@ -152,6 +153,7 @@ fn capture_cfi_instructions(snapshot: &ModuleSnapshot) -> Result<Vec<Instruction
             .cloned()
             .collect();
         let addresses = crate::runtime::cfi::global_patch_addresses(&leased_modules)?;
+        let protections = MemoryProtections::read()?;
         let mut instructions = Vec::new();
         for address in addresses {
             let size = std::mem::size_of::<u32>();
@@ -177,11 +179,7 @@ fn capture_cfi_instructions(snapshot: &ModuleSnapshot) -> Result<Vec<Instruction
                 address,
                 expected,
                 value: crate::runtime::cfi::RET_INSTRUCTION,
-                protection: crate::android::memory::get_mem_protect(
-                    address,
-                    size,
-                    Some(&module.pathname),
-                )?,
+                protection: protections.get(address, size)?,
                 module_base: module.base_addr,
             });
         }
@@ -297,6 +295,7 @@ fn capture_slots(
         if epoch != snapshot.epoch {
             return Err(Errno::Busy);
         }
+        let protections = MemoryProtections::read()?;
         let mut observed = BTreeMap::new();
         let alive: BTreeSet<String> = snapshot.modules.iter().map(module_key).collect();
         for key in state.slots.keys() {
@@ -309,7 +308,7 @@ fn capture_slots(
             if alive.contains(&identity)
                 && let Some(ranges) = snapshot.ranges.get(&key.caller_base_addr)
             {
-                observed.insert(key.clone(), observe_slot(key, ranges)?);
+                observed.insert(key.clone(), observe_slot(key, ranges, &protections)?);
             }
         }
         let leased_modules: Vec<ModuleInfo> = snapshot
@@ -327,9 +326,15 @@ fn capture_slots(
                     .entry(task.stub)
                     .or_insert_with(|| resolve_callee_addrs(task, &leased_modules));
                 match callee {
-                    Ok(callee) => {
-                        capture_task(task, module, callee, ranges, &mut observed, &mut auxiliary)
-                    }
+                    Ok(callee) => capture_task(
+                        task,
+                        module,
+                        callee,
+                        ranges,
+                        &protections,
+                        &mut observed,
+                        &mut auxiliary,
+                    ),
                     Err(error) => Err(*error),
                 }
             } else {
@@ -350,6 +355,7 @@ fn capture_task(
     module: &ModuleInfo,
     callee: &super::matcher::CalleeResolve,
     ranges: &[(usize, usize)],
+    protections: &MemoryProtections,
     observed: &mut BTreeMap<SlotKey, ObservedSlot>,
     auxiliary: &mut BTreeMap<usize, AuxiliaryPatch>,
 ) -> Result<Vec<SlotKey>, Errno> {
@@ -359,7 +365,7 @@ fn capture_task(
     let elf = ops::init_elf_guard(module.base_addr, &module.pathname)?;
     let slots = ops::find_slots_guard(&elf, &task.sym_name, callee.addrs.as_ref())?;
     if !slots.is_empty() {
-        capture_cfi(&elf, module, ranges, auxiliary)?;
+        capture_cfi(&elf, module, ranges, protections, auxiliary)?;
     }
     let mut keys = Vec::with_capacity(slots.len());
     for address in slots {
@@ -371,7 +377,7 @@ fn capture_task(
             slot_addr: address,
         };
         if !observed.contains_key(&key) {
-            observed.insert(key.clone(), observe_slot(&key, ranges)?);
+            observed.insert(key.clone(), observe_slot(&key, ranges, protections)?);
         }
         keys.push(key);
     }
@@ -382,6 +388,7 @@ fn capture_cfi(
     elf: &crate::elf::Elf,
     module: &ModuleInfo,
     ranges: &[(usize, usize)],
+    protections: &MemoryProtections,
     patches: &mut BTreeMap<usize, AuxiliaryPatch>,
 ) -> Result<(), Errno> {
     let Some((slowpath, diagnostic)) = crate::runtime::cfi::module_proxy_addresses() else {
@@ -397,8 +404,7 @@ fn capture_cfi(
             if expected == target {
                 continue;
             }
-            let protection =
-                crate::android::memory::get_addr_protect(address, Some(&module.pathname))?;
+            let protection = protections.get(address, std::mem::size_of::<usize>())?;
             patches.insert(
                 address,
                 AuxiliaryPatch {
@@ -414,14 +420,15 @@ fn capture_cfi(
     Ok(())
 }
 
-fn observe_slot(key: &SlotKey, ranges: &[(usize, usize)]) -> Result<ObservedSlot, Errno> {
+fn observe_slot(
+    key: &SlotKey,
+    ranges: &[(usize, usize)],
+    protections: &MemoryProtections,
+) -> Result<ObservedSlot, Errno> {
     validate_slot(key.slot_addr, ranges)?;
     Ok(ObservedSlot {
         value: ops::read_slot(key.slot_addr)?,
-        protection: crate::android::memory::get_addr_protect(
-            key.slot_addr,
-            Some(&key.caller_path_name),
-        )?,
+        protection: protections.get(key.slot_addr, std::mem::size_of::<usize>())?,
     })
 }
 

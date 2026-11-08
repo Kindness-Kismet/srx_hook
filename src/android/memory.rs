@@ -2,115 +2,86 @@
 
 use crate::errno::Errno;
 use crate::log;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fs;
 use std::sync::atomic::{Ordering, fence};
 
 pub const PROT_READ_FLAG: u32 = 0x1;
 pub const PROT_WRITE_FLAG: u32 = 0x2;
 pub const PROT_EXEC_FLAG: u32 = 0x4;
 
-// 查询指定地址范围的内存保护属性
-// pathname 可选，用于加速 maps 行过滤；不匹配时回退纯地址查找
-pub fn get_mem_protect(addr: usize, len: usize, pathname: Option<&str>) -> Result<u32, Errno> {
-    let effective_path = pathname.map(normalize_maps_pathname);
-    if effective_path.is_some()
-        && let Ok(prot) = scan_maps_for_protect(addr, len, effective_path)
-    {
-        return Ok(prot);
-    }
-    scan_maps_for_protect(addr, len, None)
+struct ProtectionRange {
+    start: usize,
+    end: usize,
+    protection: u32,
 }
 
-// 逐行扫描 /proc/self/maps，收集覆盖 [addr, addr+len) 的所有段的权限
-// 跨段时取权限交集；仅匹配私有映射（perm[3] == 'p'）
-fn scan_maps_for_protect(addr: usize, len: usize, pathname: Option<&str>) -> Result<u32, Errno> {
-    let mut start_addr = addr;
-    let end_addr = addr.saturating_add(len);
-    let mut prot: u32 = 0;
-    let mut load0 = true;
-    let mut found_all = false;
+// 快照只在调用方持有的同一次 loader 租期内复用。
+pub(crate) struct MemoryProtections {
+    ranges: Vec<ProtectionRange>,
+}
 
-    let file = File::open("/proc/self/maps").map_err(|_| Errno::BadMaps)?;
-    let reader = BufReader::new(file);
-
-    for line in reader.lines() {
-        let line = line.map_err(|_| Errno::BadMaps)?;
-        if let Some(path) = pathname
-            && !line.contains(path)
-        {
-            continue;
-        }
-
-        let mut parts = line.split_whitespace();
-        let range = match parts.next() {
-            Some(value) => value,
-            None => continue,
-        };
-        let perm = match parts.next() {
-            Some(value) => value,
-            None => continue,
-        };
-
-        if perm.len() < 4 {
-            continue;
-        }
-        let perm_bytes = perm.as_bytes();
-        if perm_bytes[3] != b'p' {
-            continue;
-        }
-
-        let mut range_parts = range.split('-');
-        let start_str = match range_parts.next() {
-            Some(value) => value,
-            None => continue,
-        };
-        let end_str = match range_parts.next() {
-            Some(value) => value,
-            None => continue,
-        };
-        let start = usize::from_str_radix(start_str, 16).unwrap_or(0);
-        let end = usize::from_str_radix(end_str, 16).unwrap_or(0);
-
-        if start_addr < start || start_addr >= end {
-            continue;
-        }
-
-        if load0 {
-            if perm_bytes[0] == b'r' {
-                prot |= PROT_READ_FLAG;
-            }
-            if perm_bytes[1] == b'w' {
-                prot |= PROT_WRITE_FLAG;
-            }
-            if perm_bytes[2] == b'x' {
-                prot |= PROT_EXEC_FLAG;
-            }
-            load0 = false;
-        } else {
-            if perm_bytes[0] != b'r' {
-                prot &= !PROT_READ_FLAG;
-            }
-            if perm_bytes[1] != b'w' {
-                prot &= !PROT_WRITE_FLAG;
-            }
-            if perm_bytes[2] != b'x' {
-                prot &= !PROT_EXEC_FLAG;
+impl MemoryProtections {
+    pub(crate) fn read() -> Result<Self, Errno> {
+        let content = fs::read("/proc/self/maps").map_err(|_| Errno::BadMaps)?;
+        let mut ranges = Vec::new();
+        for line in content.split(|byte| *byte == b'\n') {
+            if let Some(range) = parse_protection_range(line) {
+                ranges.push(range);
             }
         }
-
-        if end_addr <= end {
-            found_all = true;
-            break;
-        }
-        start_addr = end;
+        Ok(Self { ranges })
     }
 
-    if !found_all {
-        return Err(Errno::SegvErr);
+    // maps 按地址递增；跨段取交集，空洞和共享映射不提供私有页权限。
+    pub(crate) fn get(&self, addr: usize, len: usize) -> Result<u32, Errno> {
+        let mut current = addr;
+        let end = addr.saturating_add(len);
+        let mut protection = PROT_READ_FLAG | PROT_WRITE_FLAG | PROT_EXEC_FLAG;
+        let first = self.ranges.partition_point(|range| range.end <= addr);
+        for range in &self.ranges[first..] {
+            if current < range.start {
+                return Err(Errno::SegvErr);
+            }
+            protection &= range.protection;
+            if end <= range.end {
+                return Ok(protection);
+            }
+            current = range.end;
+        }
+        Err(Errno::SegvErr)
     }
+}
 
-    Ok(prot)
+fn parse_protection_range(line: &[u8]) -> Option<ProtectionRange> {
+    // maps 路径允许非 UTF-8 字节，只解析地址和权限字段。
+    let mut fields = line
+        .split(u8::is_ascii_whitespace)
+        .filter(|field| !field.is_empty());
+    let (start, end) = std::str::from_utf8(fields.next()?).ok()?.split_once('-')?;
+    let permissions = fields.next()?;
+    if permissions.len() < 4 || permissions[3] != b'p' {
+        return None;
+    }
+    let mut protection = 0;
+    for (value, expected, flag) in [
+        (permissions[0], b'r', PROT_READ_FLAG),
+        (permissions[1], b'w', PROT_WRITE_FLAG),
+        (permissions[2], b'x', PROT_EXEC_FLAG),
+    ] {
+        if value == expected {
+            protection |= flag;
+        }
+    }
+    Some(ProtectionRange {
+        start: usize::from_str_radix(start, 16).ok()?,
+        end: usize::from_str_radix(end, 16).ok()?,
+        protection,
+    })
+}
+
+// 路径提示不影响权限结果，按地址覆盖直接定位唯一映射。
+pub fn get_mem_protect(addr: usize, len: usize, _pathname: Option<&str>) -> Result<u32, Errno> {
+    MemoryProtections::read()?.get(addr, len)
 }
 
 // 查询单个指针大小地址的保护属性
@@ -225,12 +196,4 @@ fn cache_line_size() -> (usize, usize) {
 fn align_down(addr: usize, align: usize) -> usize {
     let mask = !(align.saturating_sub(1));
     addr & mask
-}
-
-// APK 内嵌 .so 的 pathname 含 "!/" 分隔符，maps 中仅记录 APK 路径
-fn normalize_maps_pathname(pathname: &str) -> &str {
-    match pathname.find("!/") {
-        Some(idx) => &pathname[..idx],
-        None => pathname,
-    }
 }
