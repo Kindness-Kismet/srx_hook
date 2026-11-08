@@ -71,6 +71,7 @@ pub(in crate::runtime) fn prepare_refresh(
     }
     draft.known_modules = snapshot.modules.iter().map(module_key).collect();
     let mut prepared = PreparedRefresh::new(draft, snapshot.epoch, status, events, errors)?;
+    prepared.is_full_refresh = target_task.is_none();
     prepared.prepare_changes(
         state,
         &observed,

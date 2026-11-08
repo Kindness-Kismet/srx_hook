@@ -2,7 +2,7 @@
 use crate::api::HookStub;
 use crate::errno::Errno;
 use crate::runtime::hub::{self, PreparedChain};
-use crate::runtime::state::{CoreState, ModuleInfo, PendingProtection, SlotKey};
+use crate::runtime::state::{CoreState, ModuleInfo, PendingProtection, RefreshCoverage, SlotKey};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -64,6 +64,7 @@ pub(in crate::runtime) struct PreparedRefresh {
     pub(in crate::runtime) errors: Vec<RefreshError>,
     pub(in crate::runtime) committed: bool,
     pub(in crate::runtime) protection_state_changed: bool,
+    pub(super) is_full_refresh: bool,
     epoch: LoaderEpoch,
     patches: Vec<PreparedPatch>,
     pub(super) instructions: Vec<InstructionPatch>,
@@ -89,6 +90,7 @@ impl PreparedRefresh {
             errors,
             committed: false,
             protection_state_changed: false,
+            is_full_refresh: false,
             patches: Vec::new(),
             instructions: Vec::new(),
             pages: Vec::new(),
@@ -254,6 +256,26 @@ impl PreparedRefresh {
         for (target, page) in draft.pending_protections.iter_mut().zip(&self.pages) {
             target.needs_restore = page.pending.needs_restore;
         }
+    }
+
+    // 覆盖标记与成功发布的状态同生效，失败准备或待恢复页不能覆盖后续 loader 事件。
+    pub(in crate::runtime) fn write_refresh_coverage(&self, draft: &mut CoreState) {
+        draft.refresh_coverage = if self.is_full_refresh
+            && self.committed
+            && self.status == Errno::Ok
+            && self.errors.is_empty()
+            && !draft
+                .pending_protections
+                .iter()
+                .any(|page| page.needs_restore)
+        {
+            Some(RefreshCoverage {
+                revision: draft.revision,
+                loader_epoch: (self.epoch.adds, self.epoch.subs),
+            })
+        } else {
+            None
+        };
     }
 
     // callback 尝试获取发布 gate，竞争时立即返回 Busy 并释放 loader 租期。

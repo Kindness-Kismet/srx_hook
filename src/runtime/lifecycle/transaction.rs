@@ -102,6 +102,7 @@ pub(super) fn commit(
                 .and_then(Arc::get_mut)
                 .ok_or(Errno::Invalid)?;
             change.write_protection_results(draft);
+            change.write_refresh_coverage(draft);
             old = runtime.publish_raw(source.revision, selected)?;
         }
         drop(guard);

@@ -4,8 +4,14 @@ use std::time::{Duration, Instant};
 
 use super::{
     MONITOR_FALLBACK_BURST_ROUNDS, MONITOR_FALLBACK_REFRESH_INTERVAL_MAX,
-    MONITOR_FALLBACK_REFRESH_INTERVAL_MIN,
+    MONITOR_FALLBACK_REFRESH_INTERVAL_MIN, flags, install_auto_loader_monitor_hooks,
+    maybe_install_legacy_hooks_on_demand,
 };
+use crate::errno::Errno;
+use crate::log;
+use crate::runtime::fork;
+use crate::runtime::lifecycle::entry_hook::refresh_if_needed;
+use crate::runtime::refresh;
 use crate::runtime::state::{MutexPoisonRecover, ProcessRuntime};
 
 // 周期性轮询状态，管理退避间隔和 burst 轮次
@@ -30,7 +36,7 @@ impl FallbackPollState {
         Self {
             interval: MONITOR_FALLBACK_REFRESH_INTERVAL_MIN,
             burst_rounds: MONITOR_FALLBACK_BURST_ROUNDS,
-            last_module_epoch: super::refresh::module_epoch(),
+            last_module_epoch: refresh::module_epoch(),
         }
     }
 
@@ -41,7 +47,7 @@ impl FallbackPollState {
     fn on_event_refresh(&mut self) {
         self.interval = MONITOR_FALLBACK_REFRESH_INTERVAL_MIN;
         self.burst_rounds = MONITOR_FALLBACK_BURST_ROUNDS;
-        self.last_module_epoch = super::refresh::module_epoch();
+        self.last_module_epoch = refresh::module_epoch();
     }
 
     fn on_periodic_refresh(&mut self, module_changed: bool) {
@@ -70,7 +76,7 @@ impl FallbackPollState {
     }
 
     fn poll_epoch_delta(&mut self) -> EpochDelta {
-        let Some(epoch) = super::refresh::module_epoch() else {
+        let Some(epoch) = refresh::module_epoch() else {
             self.last_module_epoch = None;
             return EpochDelta::Unknown;
         };
@@ -97,7 +103,7 @@ fn classify_epoch_delta(last: Option<(u64, u64)>, current: (u64, u64)) -> EpochD
 fn is_live(runtime: &ProcessRuntime, epoch: usize) -> bool {
     runtime.is_current()
         && runtime.monitor_running.load(Ordering::Acquire)
-        && super::flags().epoch.load(Ordering::Acquire) == epoch
+        && flags().epoch.load(Ordering::Acquire) == epoch
 }
 
 fn is_owner(runtime: &ProcessRuntime, epoch: usize) -> bool {
@@ -119,9 +125,9 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
         std::thread::park_timeout(event_interval);
     }
     while is_owner(runtime, epoch) {
-        match crate::runtime::fork::check_management() {
+        match fork::check_management() {
             Ok(()) => break,
-            Err(super::Errno::Busy) => std::thread::park_timeout(event_interval),
+            Err(Errno::Busy) => std::thread::park_timeout(event_interval),
             Err(_) => return,
         }
     }
@@ -131,17 +137,17 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
     let mut fallback_poll = FallbackPollState::new();
     let mut last_refresh = Instant::now();
     while is_owner(runtime, epoch) {
-        if crate::runtime::fork::check_management() == Err(super::Errno::Busy) {
+        if fork::check_management() == Err(Errno::Busy) {
             std::thread::park_timeout(event_interval);
             continue;
         }
-        super::install_auto_loader_monitor_hooks();
-        super::maybe_install_legacy_hooks_on_demand();
+        install_auto_loader_monitor_hooks();
+        maybe_install_legacy_hooks_on_demand();
         if !is_owner(runtime, epoch) {
             break;
         }
         let event_refresh = runtime.refresh_requested.swap(false, Ordering::AcqRel);
-        let periodic_enabled = super::flags().periodic_enabled.load(Ordering::Acquire);
+        let periodic_enabled = flags().periodic_enabled.load(Ordering::Acquire);
         if !periodic_enabled {
             fallback_poll.reset_for_event_mode();
         }
@@ -154,32 +160,25 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
         let mut module_changed = false;
         if periodic_refresh && !event_refresh {
             match fallback_poll.poll_epoch_delta() {
-                EpochDelta::Unchanged => {
-                    fallback_poll.on_periodic_refresh(false);
-                    last_refresh = Instant::now();
-                    continue;
-                }
+                EpochDelta::Unchanged => {}
                 EpochDelta::AddedOnly | EpochDelta::Changed => module_changed = true,
                 EpochDelta::Unknown => {}
             }
         }
-        let (status, _) = super::super::entry_hook::refresh();
+        let (status, _) = refresh_if_needed();
         if !is_owner(runtime, epoch) {
             break;
         }
-        if status == super::Errno::Busy {
+        if status == Errno::Busy {
             runtime.refresh_requested.store(true, Ordering::Release);
             std::thread::park_timeout(event_interval);
             continue;
         }
-        if matches!(
-            status,
-            super::Errno::Uninit | super::Errno::ForkContextUnavailable
-        ) {
+        if matches!(status, Errno::Uninit | Errno::ForkContextUnavailable) {
             break;
         }
-        if status != super::Errno::Ok {
-            super::log::warn(format_args!("auto refresh status {status:?}"));
+        if status != Errno::Ok {
+            log::warn(format_args!("auto refresh status {status:?}"));
         }
         last_refresh = Instant::now();
         if event_refresh {

@@ -29,6 +29,7 @@ impl ProcessRuntime {
 
     fn new(mut state: CoreState, pid: libc::pid_t) -> Self {
         state.process_id = pid as usize;
+        state.refresh_coverage = None;
         let next_stub = state.next_stub.max(1);
         Self {
             pid,

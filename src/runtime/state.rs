@@ -161,11 +161,18 @@ pub(super) struct PendingProtection {
     pub(super) needs_restore: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct RefreshCoverage {
+    pub(super) revision: u64,
+    pub(super) loader_epoch: (u64, u64),
+}
+
 // 完整发布的配置与绑定状态；事务在独立副本上准备下一版本。
 #[derive(Clone, Default)]
 pub(super) struct CoreState {
     pub(super) process_id: usize,
     pub(super) revision: u64,
+    pub(super) refresh_coverage: Option<RefreshCoverage>,
     pub(super) clearing: bool,
     // 自身模块加载基址，用于 memfd 匿名加载时按基址跳过 hook 自身
     pub(super) self_base_addr: usize,

@@ -1,11 +1,14 @@
 // hook 操作入口，提供 hook_single/hook_partial/hook_all/unhook 等 API 的实现
-use crate::api::{CallerAllowFilter, HookStub, HookedCallback, ModuleIdentity, RefreshError};
+use crate::api::{
+    CallerAllowFilter, HookMode, HookStub, HookedCallback, ModuleIdentity, RefreshError,
+};
 use crate::errno::Errno;
 use std::ffi::c_void;
 
 use super::super::refresh::{self};
 use super::super::state::{AllowFilterEntry, GLOBAL, HookedEntry, Task, TaskType};
 use super::invoke_callbacks;
+use super::{monitor, transaction};
 use crate::runtime::fork;
 
 pub(super) fn hook_single(
@@ -158,7 +161,7 @@ pub(super) fn unhook(stub: HookStub) -> Errno {
         return error;
     }
     let runtime = &*GLOBAL;
-    let result = super::transaction::run(runtime, false, |state| {
+    let result = transaction::run(runtime, false, |state| {
         let mut prepared = refresh::prepare_unhook(state, stub)?;
         super::super::record::add_unhook_record(
             &mut prepared.draft,
@@ -233,13 +236,23 @@ pub(super) fn refresh() -> (Errno, Vec<RefreshError>) {
         return (error, Vec::new());
     }
     let runtime = &*GLOBAL;
-    let result = super::transaction::run(runtime, false, |state| {
+    let result = transaction::run(runtime, false, |state| {
         refresh::prepare_refresh(state, false, None)
     });
     invoke_callbacks(result.events);
-    if result.status == Errno::Ok && runtime.snapshot().init.mode == crate::api::HookMode::Automatic
-    {
-        super::monitor::start_monitor_thread();
+    if result.status == Errno::Ok && runtime.snapshot().init.mode == HookMode::Automatic {
+        monitor::start_monitor_thread();
     }
     (result.status, result.errors)
+}
+
+pub(super) fn refresh_if_needed() -> (Errno, Vec<RefreshError>) {
+    if let Err(error) = fork::check_management() {
+        return (error, Vec::new());
+    }
+    match refresh::is_current_refresh_covered(&GLOBAL) {
+        Ok(true) => (Errno::Ok, Vec::new()),
+        Ok(false) => refresh(),
+        Err(error) => (error, Vec::new()),
+    }
 }

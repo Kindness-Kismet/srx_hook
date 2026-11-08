@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use super::super::refresh;
 use super::super::state::GLOBAL;
 use super::super::state::{Task, TaskType};
 use crate::runtime::fork;
