@@ -1,8 +1,9 @@
 // 模块扫描与身份解析，合并 dl_iterate_phdr 和 /proc/self/maps 两种数据源
 use crate::log;
+use crate::runtime::LoaderCall;
 use crate::runtime::state::MutexPoisonRecover;
 use std::collections::BTreeMap;
-use std::ffi::{CStr, c_void};
+use std::ffi::c_void;
 
 use super::super::super::state::ModuleInfo;
 use super::ModuleEpoch;
@@ -44,6 +45,7 @@ pub(super) struct ObservedIdentityHint {
 mod hints;
 mod maps;
 mod noload;
+mod phdr;
 mod resolve;
 
 #[cfg(test)]
@@ -56,11 +58,12 @@ use hints::{
     trim_observed_instance_namespace_hints,
 };
 use maps::enumerate_modules_maps_cached;
+use phdr::PhdrModules;
 use resolve::{resolve_module_from_handle, resolve_module_from_handle_symbol};
 
 // 通过 dl_iterate_phdr 获取模块加载/卸载计数，仅需遍历第一个条目
 pub(super) fn module_epoch() -> Option<ModuleEpoch> {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = LoaderCall::enter();
     unsafe extern "C" fn iterate_cb(
         info: *mut libc::dl_phdr_info,
         _size: usize,
@@ -124,7 +127,7 @@ pub(super) fn observe_module_identity(module: &ModuleInfo) {
 }
 
 pub(super) fn module_identity_from_handle(handle: *mut c_void) -> Option<ModuleInfo> {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = LoaderCall::enter();
     resolve_module_from_handle(handle)
 }
 
@@ -132,7 +135,7 @@ pub(super) fn module_identity_from_handle_with_symbol(
     handle: *mut c_void,
     probe_symbol: &str,
 ) -> Option<ModuleInfo> {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = LoaderCall::enter();
     if handle.is_null() {
         return None;
     }
@@ -181,22 +184,30 @@ fn merge_module_identity(
 
 // 合并 phdr 和 maps 两种数据源，应用 hint 缓存补全 namespace_id
 pub(super) fn enumerate_modules() -> Vec<ModuleInfo> {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = LoaderCall::enter();
+    let phdr = PhdrModules::capture();
+    let maps: BTreeMap<usize, ModuleInfo> = enumerate_modules_maps_cached()
+        .into_iter()
+        .map(|module| (module.base_addr, module))
+        .collect();
     let mut modules_by_base = BTreeMap::<usize, (ModuleInfo, bool)>::new();
-    for module in enumerate_modules_phdr() {
-        modules_by_base.insert(module.base_addr, (module, true));
+    for module in phdr.modules.values() {
+        modules_by_base.insert(module.base_addr, (module.clone(), true));
     }
 
-    for module in enumerate_modules_maps_cached() {
+    for module in maps.values() {
+        if phdr.is_segment_alias(module, &maps) {
+            continue;
+        }
         modules_by_base
             .entry(module.base_addr)
             .and_modify(|(existing, _)| {
-                // maps 路径与 get_mem_protect 一致，优先采用
+                // 采用内核记录的实际映射路径，保持 caller 匹配一致。
                 if !module.pathname.is_empty() && existing.pathname != module.pathname {
                     existing.pathname = module.pathname.clone();
                 }
             })
-            .or_insert((module, false));
+            .or_insert((module.clone(), false));
     }
 
     let mut modules: Vec<_> = modules_by_base.into_values().collect();
@@ -209,41 +220,5 @@ pub(super) fn enumerate_modules() -> Vec<ModuleInfo> {
             .then(left.instance_id.cmp(&right.instance_id))
             .then(left.namespace_id.cmp(&right.namespace_id))
     });
-    modules
-}
-
-fn enumerate_modules_phdr() -> Vec<ModuleInfo> {
-    unsafe extern "C" fn iterate_cb(
-        info: *mut libc::dl_phdr_info,
-        _size: usize,
-        data: *mut c_void,
-    ) -> libc::c_int {
-        let modules = unsafe { &mut *(data as *mut Vec<ModuleInfo>) };
-        if info.is_null() {
-            return 0;
-        }
-        let info = unsafe { &*info };
-        if info.dlpi_name.is_null() {
-            return 0;
-        }
-        let Ok(pathname) = unsafe { CStr::from_ptr(info.dlpi_name) }.to_str() else {
-            return 0;
-        };
-        if pathname.is_empty() || pathname.starts_with('[') {
-            return 0;
-        }
-        modules.push(ModuleInfo {
-            pathname: pathname.to_string(),
-            base_addr: info.dlpi_addr as usize,
-            instance_id: info.dlpi_name as usize,
-            namespace_id: 0,
-        });
-        0
-    }
-
-    let mut modules = Vec::<ModuleInfo>::new();
-    unsafe {
-        libc::dl_iterate_phdr(Some(iterate_cb), &mut modules as *mut _ as *mut c_void);
-    }
     modules
 }
