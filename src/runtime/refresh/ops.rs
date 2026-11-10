@@ -2,7 +2,7 @@
 use crate::android::signal_guard;
 use crate::elf;
 use crate::errno::Errno;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_void;
 use std::ptr;
 
@@ -66,6 +66,13 @@ pub(super) fn module_identity_from_handle_with_symbol(
     })
     .ok()
     .flatten()
+}
+
+pub(super) fn supplement_maps_ranges(
+    ranges: &mut BTreeMap<usize, Vec<(usize, usize)>>,
+    modules: &[ModuleInfo],
+) {
+    module_scan::supplement_maps_ranges(ranges, modules);
 }
 
 pub(super) fn enumerate_modules() -> Vec<ModuleInfo> {

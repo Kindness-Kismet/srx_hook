@@ -2,7 +2,7 @@ use super::hints::{
     apply_instance_hints, observe_path_namespace_hint, observed_instance_namespace_hints,
     observed_path_namespace_hints, resolve_namespace_id_by_instance, resolve_namespace_id_by_path,
 };
-use super::maps::{parse_maps_instance_id, parse_maps_line};
+use super::maps::{parse_maps_instance_id, parse_maps_line, parse_module_ranges};
 use super::noload::noload_path_candidates;
 use super::resolve::resolve_namespace_id_from_link_map;
 use super::{LinkMap, ObservedIdentityHint, merge_module_identity};
@@ -241,4 +241,57 @@ fn merge_identity_keeps_primary_for_mismatched_module() {
     assert_eq!(merged.base_addr, primary.base_addr);
     assert_eq!(merged.instance_id, primary.instance_id);
     assert_eq!(merged.namespace_id, primary.namespace_id);
+}
+
+#[test]
+fn parse_module_ranges_collects_segments_after_base() {
+    let content = "7f0000000000-7f0000010000 r--p 00000000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so
+7f0000010000-7f0000020000 r-xp 00010000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so
+7f0000020000-7f0000030000 rw-p 00020000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so
+7f0000030000-7f0000040000 r--p 00000000 103:06 88 /system/lib64/libc.so";
+    let ranges = parse_module_ranges(
+        content,
+        "/data/adb/modules/zygisksu/lib64/libzygisk.so",
+        0x7f0000000000,
+    );
+    assert_eq!(ranges.len(), 3);
+    assert_eq!(ranges[0], (0x7f0000000000, 0x7f0000010000));
+    assert_eq!(ranges[2], (0x7f0000020000, 0x7f0000030000));
+}
+
+#[test]
+fn parse_module_ranges_stops_at_next_module() {
+    // 相邻模块之后又出现同名映射时，不得越过相邻模块继续收集。
+    let content = "7f0000000000-7f0000010000 r--p 00000000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so
+7f0000010000-7f0000020000 r-xp 00010000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so
+7f0000020000-7f0000030000 r--p 00000000 103:06 88 /system/lib64/libc.so
+7f0000030000-7f0000040000 r-xp 00010000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so";
+    let ranges = parse_module_ranges(
+        content,
+        "/data/adb/modules/zygisksu/lib64/libzygisk.so",
+        0x7f0000000000,
+    );
+    assert_eq!(ranges.len(), 2);
+}
+
+#[test]
+fn parse_module_ranges_requires_matching_base() {
+    let content = "7f0000000000-7f0000010000 r--p 00000000 103:06 77 /data/adb/modules/zygisksu/lib64/libzygisk.so";
+    assert!(
+        parse_module_ranges(
+            content,
+            "/data/adb/modules/zygisksu/lib64/libzygisk.so",
+            0x7f0000001000
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn parse_module_ranges_matches_deleted_mapping() {
+    let content =
+        "7f0000000000-7f0000010000 r--p 00000000 103:06 77 /data/local/tmp/libplug.so (deleted)
+7f0000010000-7f0000020000 r-xp 00010000 103:06 77 /data/local/tmp/libplug.so (deleted)";
+    let ranges = parse_module_ranges(content, "/data/local/tmp/libplug.so", 0x7f0000000000);
+    assert_eq!(ranges.len(), 2);
 }

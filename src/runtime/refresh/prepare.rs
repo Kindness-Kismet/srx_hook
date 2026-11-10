@@ -206,7 +206,11 @@ fn capture_cfi_instructions(snapshot: &ModuleSnapshot) -> Result<Vec<Instruction
 fn discover_modules() -> Result<ModuleSnapshot, Errno> {
     lease::with_loader_lease(|_| {
         let modules = ops::enumerate_modules();
-        let ranges = lease::bionic_module_ranges();
+        let mut ranges = lease::bionic_module_ranges();
+        // maps 独有的模块（注入框架用自有 linker 映射、不注册进 bionic solist）
+        // 在 bionic_module_ranges 里没有段范围；直接沿用会让 capture_slots 判
+        // ModuleLeaseUnavailable 并回滚整批 hook。用 maps 的真实映射补齐。
+        ops::supplement_maps_ranges(&mut ranges, &modules);
         let epoch = ops::module_epoch().ok_or(Errno::ModuleLeaseUnavailable)?;
         Ok(ModuleSnapshot {
             modules,

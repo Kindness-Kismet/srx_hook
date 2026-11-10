@@ -183,6 +183,14 @@ fn merge_module_identity(
 }
 
 // 合并 phdr 和 maps 两种数据源，应用 hint 缓存补全 namespace_id
+// 用 maps 补齐缺失的模块段范围：注入框架自映射的模块不在 dl_iterate_phdr 名单里。
+pub(super) fn supplement_maps_ranges(
+    ranges: &mut BTreeMap<usize, Vec<(usize, usize)>>,
+    modules: &[ModuleInfo],
+) {
+    maps::supplement_missing_ranges(ranges, modules);
+}
+
 pub(super) fn enumerate_modules() -> Vec<ModuleInfo> {
     let _loader_call = LoaderCall::enter();
     let phdr = PhdrModules::capture();
