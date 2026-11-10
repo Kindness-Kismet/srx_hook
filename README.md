@@ -79,7 +79,9 @@ child 为管理状态和辅助缓存创建独立的进程运行时，继承的�
 
 ## 模块生命周期
 
-模块采集与提交复验使用 Bionic 的 `dl_iterate_phdr` 临界区，覆盖其管理的普通模块和隐藏 namespace 模块。仅由 `/proc/self/maps` 发现、且缺少 Bionic 模块租期的自定义 loader 模块，应用阶段返回 `ModuleLeaseUnavailable`。对应任务仍可完成注册，checked 接口的 `HookError.stub` 标明已注册任务，具体模块错误也通过回调和 `refresh()` 返回；当前版本要求目标模块具备 Bionic 提供的存活保护。
+模块采集与提交复验使用 Bionic 的 `dl_iterate_phdr` 临界区，覆盖其管理的普通模块和隐藏 namespace 模块。`hook_all`、`hook_partial` 及对应批量请求只扫描具备该存活保护的模块；过滤回调也只接收这些候选。仅由 `/proc/self/maps` 发现的自定义 loader 模块保留在身份枚举中，不参与全量或过滤扫描，不影响其他模块的安装与刷新。
+
+使用 `hook_single` 明确指定缺少 Bionic 租期的模块时，应用阶段仍返回 `ModuleLeaseUnavailable`。对应任务仍可完成注册，checked 接口的 `HookError.stub` 标明已注册任务，具体模块错误也通过回调和 `refresh()` 返回。maps 地址范围不能阻止自定义 loader 并发卸载，不能代替模块存活保护；实际段范围、slot 与提交复验失败仍按错误处理。
 
 ## 测试
 

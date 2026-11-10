@@ -7,6 +7,7 @@ pub type HookStub = u64;
 
 #[derive(Clone, Copy)]
 pub enum HookCaller<'a> {
+    // 全量与过滤扫描仅选择 Bionic 提供存活保护的模块。
     All,
     Single(&'a str),
     Partial {

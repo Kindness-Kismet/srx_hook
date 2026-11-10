@@ -51,7 +51,7 @@ pub(in crate::runtime) fn prepare_refresh(
 ) -> Result<PreparedRefresh, Errno> {
     let snapshot = discover_modules()?;
     // 已知路径和地址可被卸载后复用，是否需要改写由实际 slot 与任务链决定。
-    let approved = select_tasks(state, &snapshot.modules, target_task);
+    let approved = select_tasks(state, &snapshot, target_task);
     let (captured, observed, auxiliary) = capture_slots(state, &snapshot, &approved)?;
     let mut draft = state.clone();
     prune_draft(&mut draft, &snapshot.modules, &observed);
@@ -266,7 +266,7 @@ fn pending_pages(
 
 fn select_tasks(
     state: &CoreState,
-    modules: &[ModuleInfo],
+    snapshot: &ModuleSnapshot,
     target: Option<HookStub>,
 ) -> Vec<(Task, ModuleInfo)> {
     let mut approved = Vec::new();
@@ -278,7 +278,7 @@ fn select_tasks(
             .filter_map(|stub| state.tasks.get(stub))
             .collect(),
     };
-    for module in modules {
+    for module in &snapshot.modules {
         if should_ignore(
             &module.pathname,
             module.base_addr,
@@ -289,7 +289,12 @@ fn select_tasks(
         ) {
             continue;
         }
+        let has_loader_lease = snapshot.ranges.contains_key(&module.base_addr);
         for task in &tasks {
+            // 批量扫描只覆盖 loader 能保护的模块；显式 Single 目标保留租期错误。
+            if !has_loader_lease && task.task_type != TaskType::Single {
+                continue;
+            }
             if is_task_match_caller(task, module) {
                 approved.push(((*task).clone(), module.clone()));
             }
