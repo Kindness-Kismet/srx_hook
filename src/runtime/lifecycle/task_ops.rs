@@ -1,7 +1,10 @@
 // hook 任务的添加、异步刷新请求与回调分发
+use super::transaction;
+use crate::api;
 use crate::api::{HookMode, HookStub};
 use crate::errno::Errno;
 use crate::log;
+use std::ffi;
 use std::ffi::c_void;
 
 use super::super::record;
@@ -18,7 +21,7 @@ pub(super) fn add_task(task: Task) -> Option<HookStub> {
         .ok()
 }
 
-pub(super) fn add_task_checked(task: Task) -> Result<HookStub, crate::api::HookError> {
+pub(super) fn add_task_checked(task: Task) -> Result<HookStub, api::HookError> {
     register_task(task, None)
 }
 
@@ -34,7 +37,7 @@ pub(super) fn add_monitor_task(
 fn register_task(
     mut task: Task,
     installation: Option<&monitor::Installation>,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     fork::check_management()?;
     let runtime = &*GLOBAL;
     let source = runtime.snapshot();
@@ -97,7 +100,7 @@ fn register_task(
             Err(status.into())
         };
     }
-    let result = super::transaction::run(runtime, false, |source| {
+    let result = transaction::run(runtime, false, |source| {
         // epoch 校验使用本轮快照，clear 发布的新版本由 commit 再次核对。
         if source.init.mode != HookMode::Automatic
             || installation.is_some_and(|owner| !owner.is_current())
@@ -125,7 +128,7 @@ fn register_task(
         Ok(prepared)
     });
     if !result.committed {
-        return Err(crate::api::HookError {
+        return Err(api::HookError {
             status: result.status,
             stub: None,
             errors: result.errors,
@@ -140,7 +143,7 @@ fn register_task(
             "hook task {} apply status {:?}",
             stub, result.status
         ));
-        return Err(crate::api::HookError {
+        return Err(api::HookError {
             status: result.status,
             stub: Some(stub),
             errors: result.errors,
@@ -165,10 +168,10 @@ pub(super) fn request_refresh_async_full() {
 
 pub(super) fn invoke_callbacks(events: Vec<CallbackEvent>) {
     for event in events {
-        let Ok(caller_path_name) = std::ffi::CString::new(event.caller_path_name) else {
+        let Ok(caller_path_name) = ffi::CString::new(event.caller_path_name) else {
             continue;
         };
-        let Ok(sym_name) = std::ffi::CString::new(event.sym_name) else {
+        let Ok(sym_name) = ffi::CString::new(event.sym_name) else {
             continue;
         };
         unsafe {

@@ -1,6 +1,7 @@
 // 基于 dlinfo/dladdr1 的模块身份解析，从 handle 或符号地址提取完整 ModuleInfo
 use crate::log;
 use std::ffi::{CStr, CString, c_void};
+use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -39,7 +40,7 @@ pub(super) fn resolve_dlinfo_fn() -> Option<DlinfoFn> {
             symbol as usize
         }
     });
-    (address != 0).then(|| unsafe { std::mem::transmute::<usize, DlinfoFn>(address) })
+    (address != 0).then(|| unsafe { mem::transmute::<usize, DlinfoFn>(address) })
 }
 
 fn resolve_dladdr1_fn() -> Option<Dladdr1Fn> {
@@ -58,7 +59,7 @@ fn resolve_dladdr1_fn() -> Option<Dladdr1Fn> {
         }
         if symbol.is_null() { 0 } else { symbol as usize }
     });
-    (address != 0).then(|| unsafe { std::mem::transmute::<usize, Dladdr1Fn>(address) })
+    (address != 0).then(|| unsafe { mem::transmute::<usize, Dladdr1Fn>(address) })
 }
 
 fn cached_address(cache: &AtomicUsize, resolve: impl FnOnce() -> usize) -> usize {
@@ -124,7 +125,7 @@ pub(super) fn resolve_link_map_from_handle(
 
 fn resolve_link_map_from_addr(addr: *const c_void) -> Option<*mut LinkMap> {
     let dladdr1 = resolve_dladdr1_fn()?;
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    let mut info: libc::Dl_info = unsafe { mem::zeroed() };
     let mut link_map_ptr: *mut c_void = ptr::null_mut();
     if unsafe { dladdr1(addr, &mut info, &mut link_map_ptr, RTLD_DI_LINKMAP) } == 0
         || link_map_ptr.is_null()
@@ -188,7 +189,7 @@ pub(super) fn resolve_module_from_handle_symbol(
         return None;
     }
 
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    let mut info: libc::Dl_info = unsafe { mem::zeroed() };
     if unsafe { libc::dladdr(symbol_addr as *const c_void, &mut info) } == 0
         || info.dli_fbase.is_null()
         || info.dli_fname.is_null()
@@ -311,19 +312,20 @@ fn resolve_namespace_id_from_noload_cache(
 #[cfg(test)]
 mod tests {
     use super::{LinkMap, resolve_namespace_id_from_link_map};
+    use std::ptr;
 
     #[test]
     fn resolve_namespace_from_link_map_cycle_guarded() {
         let mut left = LinkMap {
             l_addr: 0,
-            l_name: std::ptr::null(),
-            l_ld: std::ptr::null_mut(),
-            l_next: std::ptr::null_mut(),
-            l_prev: std::ptr::null_mut(),
+            l_name: ptr::null(),
+            l_ld: ptr::null_mut(),
+            l_next: ptr::null_mut(),
+            l_prev: ptr::null_mut(),
         };
-        left.l_prev = std::ptr::addr_of_mut!(left);
+        left.l_prev = ptr::addr_of_mut!(left);
 
-        let namespace = resolve_namespace_id_from_link_map(std::ptr::addr_of_mut!(left));
+        let namespace = resolve_namespace_id_from_link_map(ptr::addr_of_mut!(left));
         assert!(namespace.is_none());
     }
 }

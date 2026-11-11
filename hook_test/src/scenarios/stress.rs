@@ -1,6 +1,9 @@
+use super::automatic;
 use std::ffi::c_void;
+use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use srx_hook::{HookMode, clear, hook_single, init, refresh, unhook};
@@ -25,7 +28,7 @@ pub unsafe fn scenario_concurrent_hooking_stress() {
     for _ in 0..worker_count {
         let barrier = Arc::clone(&start_barrier);
         let worker_handle = handle_addr;
-        workers.push(std::thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             barrier.wait();
             for _ in 0..worker_calls {
                 unsafe { hook_test_trigger(worker_handle as *mut c_void) };
@@ -41,11 +44,11 @@ pub unsafe fn scenario_concurrent_hooking_stress() {
             "puts",
             hook_puts_quiet as *mut c_void,
             None,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
         .expect("hook_single concurrent failed");
         ensure_ok(refresh().0, "refresh concurrent");
-        std::thread::sleep(Duration::from_millis(2));
+        thread::sleep(Duration::from_millis(2));
         ensure_ok(unhook(stub), "unhook concurrent");
     }
 
@@ -68,7 +71,7 @@ pub unsafe fn scenario_persistent_hook_parallel_stress() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single persistent stress failed");
     ensure_ok(refresh().0, "refresh persistent stress");
@@ -84,7 +87,7 @@ pub unsafe fn scenario_persistent_hook_parallel_stress() {
     for _ in 0..worker_count {
         let barrier = Arc::clone(&start_barrier);
         let worker_handle = handle_addr;
-        workers.push(std::thread::spawn(move || {
+        workers.push(thread::spawn(move || {
             barrier.wait();
             for _ in 0..worker_calls {
                 unsafe { hook_test_trigger(worker_handle as *mut c_void) };
@@ -118,7 +121,7 @@ pub unsafe fn scenario_perf_smoke() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single perf failed");
     ensure_ok(refresh().0, "refresh perf");
@@ -152,7 +155,7 @@ pub unsafe fn scenario_leak_smoke() {
             "puts",
             hook_puts_quiet as *mut c_void,
             None,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
         .expect("hook_single leak failed");
         ensure_ok(refresh().0, "refresh leak");
@@ -189,7 +192,7 @@ pub unsafe fn scenario_manual_churn_marathon() {
             "puts",
             hook_puts_quiet as *mut c_void,
             None,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         )
         .expect("hook_single manual churn marathon failed");
         ensure_ok(refresh().0, "refresh manual churn marathon");
@@ -230,7 +233,7 @@ pub unsafe fn scenario_soak_suite() {
     let start = Instant::now();
 
     for round in 0..rounds {
-        super::automatic::scenario_auto_reload_long_stress();
+        automatic::scenario_auto_reload_long_stress();
         scenario_concurrent_hooking_stress();
         scenario_persistent_hook_parallel_stress();
         scenario_leak_smoke();

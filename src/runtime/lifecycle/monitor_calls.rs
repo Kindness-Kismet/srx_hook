@@ -1,7 +1,10 @@
 // dlopen/dlclose 系列函数的真实地址解析与调用封装
 // 支持 loader 符号、linker 内部符号和标准 libc 符号三级回退
 use crate::log;
+use crate::runtime;
 use std::ffi::{CStr, c_char, c_void};
+use std::mem;
+use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::monitor;
@@ -85,10 +88,10 @@ pub(super) unsafe fn call_dlopen_fn(
     flags: libc::c_int,
 ) -> *mut c_void {
     if addr == 0 {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
     let func: unsafe extern "C" fn(*const c_char, libc::c_int) -> *mut c_void =
-        std::mem::transmute(addr as *mut c_void);
+        mem::transmute(addr as *mut c_void);
     func(filename, flags)
 }
 
@@ -99,10 +102,10 @@ pub(super) unsafe fn call_android_dlopen_ext_fn(
     extinfo: *const c_void,
 ) -> *mut c_void {
     if addr == 0 {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
     let func: unsafe extern "C" fn(*const c_char, libc::c_int, *const c_void) -> *mut c_void =
-        std::mem::transmute(addr as *mut c_void);
+        mem::transmute(addr as *mut c_void);
     func(filename, flags, extinfo)
 }
 
@@ -111,7 +114,7 @@ pub(super) unsafe fn call_dlclose_fn(addr: usize, handle: *mut c_void) -> libc::
         return -1;
     }
     let func: unsafe extern "C" fn(*mut c_void) -> libc::c_int =
-        std::mem::transmute(addr as *mut c_void);
+        mem::transmute(addr as *mut c_void);
     func(handle)
 }
 
@@ -122,10 +125,10 @@ pub(super) unsafe fn call_loader_dlopen_fn(
     caller_addr: *const c_void,
 ) -> *mut c_void {
     if addr == 0 {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
     let func: unsafe extern "C" fn(*const c_char, libc::c_int, *const c_void) -> *mut c_void =
-        std::mem::transmute(addr as *mut c_void);
+        mem::transmute(addr as *mut c_void);
     func(filename, flags, caller_addr)
 }
 
@@ -137,14 +140,14 @@ pub(super) unsafe fn call_loader_android_dlopen_ext_fn(
     caller_addr: *const c_void,
 ) -> *mut c_void {
     if addr == 0 {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
     let func: unsafe extern "C" fn(
         *const c_char,
         libc::c_int,
         *const c_void,
         *const c_void,
-    ) -> *mut c_void = std::mem::transmute(addr as *mut c_void);
+    ) -> *mut c_void = mem::transmute(addr as *mut c_void);
     func(filename, flags, extinfo, caller_addr)
 }
 
@@ -153,7 +156,7 @@ pub(super) unsafe fn call_loader_dlclose_fn(addr: usize, handle: *mut c_void) ->
         return -1;
     }
     let func: unsafe extern "C" fn(*mut c_void) -> libc::c_int =
-        std::mem::transmute(addr as *mut c_void);
+        mem::transmute(addr as *mut c_void);
     func(handle)
 }
 
@@ -165,19 +168,19 @@ unsafe fn call_linker_dlopen_ext_fn(
     caller_addr: *const c_void,
 ) -> *mut c_void {
     if addr == 0 {
-        return std::ptr::null_mut();
+        return ptr::null_mut();
     }
     let func: unsafe extern "C" fn(
         *const c_char,
         libc::c_int,
         *const c_void,
         *const c_void,
-    ) -> *mut c_void = std::mem::transmute(addr as *mut c_void);
+    ) -> *mut c_void = mem::transmute(addr as *mut c_void);
     func(filename, flags, extinfo, caller_addr)
 }
 
 unsafe fn resolve_symbol(name: &CStr) -> usize {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = runtime::LoaderCall::enter();
     let ptr = libc::dlsym(RTLD_NEXT_FALLBACK, name.as_ptr());
     ptr as usize
 }
@@ -200,7 +203,7 @@ unsafe fn linker_error_message() -> Option<String> {
         return None;
     }
     let func: unsafe extern "C" fn() -> *const c_char =
-        unsafe { std::mem::transmute(get_error_buffer as *mut c_void) };
+        unsafe { mem::transmute(get_error_buffer as *mut c_void) };
     let ptr = unsafe { func() };
     if ptr.is_null() {
         return None;
@@ -305,7 +308,7 @@ pub(super) unsafe fn call_real_loader_dlopen(
     } else {
         monitor::note_loader_call_fallback("loader_dlopen_symbol_missing");
     }
-    call_real_dlopen_with_caller(filename, flags, std::ptr::null(), caller_addr)
+    call_real_dlopen_with_caller(filename, flags, ptr::null(), caller_addr)
 }
 
 pub(super) unsafe fn call_real_loader_android_dlopen_ext(

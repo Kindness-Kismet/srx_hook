@@ -1,6 +1,8 @@
 // Trampoline 代码生成与内存管理
 // 通过汇编模板 + 运行时数据填充，为每个 Hub 生成独立的跳板代码
+use super::Hub;
 use crate::errno::Errno;
+use std::arch;
 use std::mem::size_of;
 use std::ptr;
 
@@ -10,7 +12,7 @@ mod manager;
 
 // aarch64 跳板：保存参数，保持原始 SP 分发调用，恢复返回寄存器和调用方地址。
 #[cfg(target_arch = "aarch64")]
-std::arch::global_asm!(
+arch::global_asm!(
     r#"
     .text
     .global srx_hub_trampo_template_start
@@ -78,7 +80,7 @@ hub_ptr:
 
 // x86_64 跳板：替换返回地址后保持原始参数布局分发，使用 AT&T 语法。
 #[cfg(target_arch = "x86_64")]
-std::arch::global_asm!(
+arch::global_asm!(
     r#"
     .text
     .global srx_hub_trampo_template_start
@@ -186,11 +188,11 @@ fn trampo_size() -> usize {
     align_up(code_size + size_of::<usize>() * 3, TRAMPO_ALIGN)
 }
 
-pub(super) fn alloc_hub(orig_addr: usize) -> Result<*mut super::Hub, Errno> {
+pub(super) fn alloc_hub(orig_addr: usize) -> Result<*mut Hub, Errno> {
     manager::alloc_hub(orig_addr)
 }
 
-pub(super) fn discard_unpublished_hub(hub_ptr: *mut super::Hub) {
+pub(super) fn discard_unpublished_hub(hub_ptr: *mut Hub) {
     manager::discard_unpublished_hub(hub_ptr);
 }
 

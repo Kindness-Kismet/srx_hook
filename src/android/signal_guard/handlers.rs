@@ -1,6 +1,7 @@
 // SIGSEGV/SIGBUS 信号处理器实现
 // 先尝试守卫跳转，失败则链式转发给之前注册的 handler
 
+use std::mem;
 use std::ptr;
 
 use super::abi;
@@ -32,11 +33,11 @@ unsafe fn dispatch_old_handler(
         return;
     }
 
-    let mut previous_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut previous_mask: libc::sigset_t = unsafe { mem::zeroed() };
     let context_mask = abi::read_ucontext_sigmask(ucontext);
 
     // 合并 ucontext 掩码与旧 handler 掩码，额外屏蔽 SIGPIPE/SIGUSR1/SIGQUIT
-    let mut forward_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut forward_mask: libc::sigset_t = unsafe { mem::zeroed() };
     abi::sigset_or(&mut forward_mask, &context_mask, &old_action.sa_mask);
     if old_action.sa_flags & libc::SA_NODEFER == 0 {
         unsafe {
@@ -54,7 +55,7 @@ unsafe fn dispatch_old_handler(
 
     if old_action.sa_flags & libc::SA_RESETHAND != 0 {
         unsafe {
-            let mut dfl_action: libc::sigaction = std::mem::zeroed();
+            let mut dfl_action: libc::sigaction = mem::zeroed();
             dfl_action.sa_sigaction = libc::SIG_DFL;
             dfl_action.sa_flags = 0;
             libc::sigemptyset(&mut dfl_action.sa_mask);
@@ -64,10 +65,10 @@ unsafe fn dispatch_old_handler(
 
     if old_action.sa_flags & libc::SA_SIGINFO != 0 {
         let action: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
-            unsafe { std::mem::transmute(handler) };
+            unsafe { mem::transmute(handler) };
         action(sig, info, ucontext);
     } else {
-        let action: extern "C" fn(libc::c_int) = unsafe { std::mem::transmute(handler) };
+        let action: extern "C" fn(libc::c_int) = unsafe { mem::transmute(handler) };
         action(sig);
     }
 
@@ -82,13 +83,13 @@ unsafe fn dispatch_old_handler(
 // 依次尝试 tgkill -> pthread_kill -> raise -> _exit
 fn terminate_current_signal(sig: libc::c_int) -> ! {
     unsafe {
-        let mut dfl_action: libc::sigaction = std::mem::zeroed();
+        let mut dfl_action: libc::sigaction = mem::zeroed();
         dfl_action.sa_sigaction = libc::SIG_DFL;
         dfl_action.sa_flags = 0;
         libc::sigemptyset(&mut dfl_action.sa_mask);
         let _ = abi::raw_sigaction(sig, &dfl_action, ptr::null_mut());
 
-        let mut mask: libc::sigset_t = std::mem::zeroed();
+        let mut mask: libc::sigset_t = mem::zeroed();
         libc::sigemptyset(&mut mask);
         libc::sigaddset(&mut mask, sig);
         let _ = abi::raw_sigprocmask(libc::SIG_UNBLOCK, &mask, ptr::null_mut());

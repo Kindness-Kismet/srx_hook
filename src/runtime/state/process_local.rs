@@ -1,3 +1,5 @@
+use std::marker;
+use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 struct ProcessValue<T> {
@@ -9,7 +11,7 @@ struct ProcessValue<T> {
 pub(crate) struct PidLocal<T> {
     current: AtomicPtr<ProcessValue<T>>,
     init: fn() -> T,
-    marker: std::marker::PhantomData<T>,
+    marker: marker::PhantomData<T>,
 }
 
 unsafe impl<T: Send + Sync> Sync for PidLocal<T> {}
@@ -17,9 +19,9 @@ unsafe impl<T: Send + Sync> Sync for PidLocal<T> {}
 impl<T> PidLocal<T> {
     pub(crate) const fn new(init: fn() -> T) -> Self {
         Self {
-            current: AtomicPtr::new(std::ptr::null_mut()),
+            current: AtomicPtr::new(ptr::null_mut()),
             init,
-            marker: std::marker::PhantomData,
+            marker: marker::PhantomData,
         }
     }
 

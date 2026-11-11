@@ -1,7 +1,10 @@
 // ART sigchain API 的动态解析与调用
 // 在 ART 环境中通过 sigchain 注册信号处理器，避免与 ART 的信号机制冲突
 
+use super::published_functions;
+use crate::runtime;
 use std::ffi::{CStr, c_void};
+use std::mem;
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
@@ -15,7 +18,7 @@ use super::{
 // 延迟解析并缓存 sigchain API 函数指针
 fn sigchain_api_fns() -> Option<&'static SigchainApiFns> {
     static SIGCHAIN_API_FNS: AtomicPtr<Option<SigchainApiFns>> = AtomicPtr::new(ptr::null_mut());
-    super::published_functions(&SIGCHAIN_API_FNS, resolve_sigchain_api_fns).as_ref()
+    published_functions(&SIGCHAIN_API_FNS, resolve_sigchain_api_fns).as_ref()
 }
 
 pub(super) fn prime() {
@@ -24,7 +27,7 @@ pub(super) fn prime() {
 
 // 解析 sigchain API：需要 add 和 remove 两个必选符号，ensure_front 可选
 fn resolve_sigchain_api_fns() -> Option<SigchainApiFns> {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = runtime::LoaderCall::enter();
     let add_symbol = resolve_sigchain_symbol_candidates(&[
         c"AddSpecialSignalHandlerFn",
         c"AddSpecialSignalHandler",
@@ -41,15 +44,15 @@ fn resolve_sigchain_api_fns() -> Option<SigchainApiFns> {
         resolve_sigchain_symbol_candidates(&[c"EnsureFrontOfChain", c"EnsureFrontOfSignalChain"]);
     Some(SigchainApiFns {
         add_special_handler_fn: unsafe {
-            std::mem::transmute::<*mut c_void, AddSpecialSignalHandlerFn>(add_symbol)
+            mem::transmute::<*mut c_void, AddSpecialSignalHandlerFn>(add_symbol)
         },
         remove_special_handler_fn: unsafe {
-            std::mem::transmute::<*mut c_void, RemoveSpecialSignalHandlerFn>(remove_symbol)
+            mem::transmute::<*mut c_void, RemoveSpecialSignalHandlerFn>(remove_symbol)
         },
         ensure_front_of_chain_fn: if ensure_symbol.is_null() {
             None
         } else {
-            Some(unsafe { std::mem::transmute::<*mut c_void, EnsureFrontOfChainFn>(ensure_symbol) })
+            Some(unsafe { mem::transmute::<*mut c_void, EnsureFrontOfChainFn>(ensure_symbol) })
         },
     })
 }
@@ -107,7 +110,7 @@ fn resolve_symbol_from_library(lib_name: &CStr, symbol: &CStr, flags: libc::c_in
 }
 
 fn make_sigchain_action(callback: SigchainCallbackFn) -> SigchainAction {
-    let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut mask: libc::sigset_t = unsafe { mem::zeroed() };
     unsafe {
         libc::sigfillset(&mut mask);
     }

@@ -1,3 +1,6 @@
+use super::thread_state;
+use std::hint;
+use std::marker;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 use crate::errno::Errno;
@@ -71,7 +74,7 @@ pub(super) fn check_management() -> Result<(), Errno> {
 
 pub(super) struct PublishGuard {
     pid: libc::pid_t,
-    marker: std::marker::PhantomData<*mut ()>,
+    marker: marker::PhantomData<*mut ()>,
 }
 
 pub(super) fn try_publish() -> Option<PublishGuard> {
@@ -82,7 +85,7 @@ pub(super) fn try_publish() -> Option<PublishGuard> {
         .ok()
         .map(|_| PublishGuard {
             pid: unsafe { libc::getpid() },
-            marker: std::marker::PhantomData,
+            marker: marker::PhantomData,
         })
 }
 
@@ -151,7 +154,7 @@ unsafe extern "C" fn prepare() {
     GATE.fetch_add(FREEZE, Ordering::AcqRel);
     // 发布段由当前线程完成预备好的内存写入和原始系统调用。
     while GATE.load(Ordering::Acquire) & WRITER != 0 {
-        std::hint::spin_loop();
+        hint::spin_loop();
     }
 }
 
@@ -175,5 +178,5 @@ unsafe extern "C" fn child() {
     GATE.store(remaining * FREEZE, Ordering::Release);
     GATE_PID.store(pid, Ordering::Release);
     REGISTRATION.store(((pid as usize) << 2) | 2, Ordering::Release);
-    super::thread_state::after_fork_child();
+    thread_state::after_fork_child();
 }

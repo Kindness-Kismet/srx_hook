@@ -1,5 +1,8 @@
 // 生命周期管理模块，作为 runtime 子模块的统一入口
 // 将 hook/unhook/refresh/控制/回调等操作分发到各子模块
+use super::refresh::CallbackEvent;
+use super::state;
+use crate::api;
 use crate::api::{
     CallerAllowFilter, HookBatchError, HookMode, HookRequest, HookStub, HookedCallback,
     ModuleIdentity, PostDlopenCallback, PreDlopenCallback, RefreshError,
@@ -54,7 +57,7 @@ pub(super) fn hook_single_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     entry_hook::hook_single_checked(
         caller_path_name,
         callee_path_name,
@@ -95,7 +98,7 @@ pub(super) fn hook_partial_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     entry_hook::hook_partial_checked(
         caller_allow_filter,
         caller_allow_filter_arg,
@@ -131,7 +134,7 @@ pub(super) fn hook_all_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     entry_hook::hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
 }
 
@@ -162,7 +165,7 @@ pub(super) fn clear() {
     entry_control::clear();
 }
 
-pub(super) fn clear_checked() -> Result<crate::api::ClearReport, crate::api::ClearError> {
+pub(super) fn clear_checked() -> Result<api::ClearReport, api::ClearError> {
     entry_control::clear_checked()
 }
 
@@ -249,7 +252,7 @@ pub(super) fn invoke_dlopen_callbacks_post(filename: *const c_char, result: i32)
     entry_control::invoke_dlopen_callbacks_post(filename, result)
 }
 
-fn add_task(task: super::state::Task) -> Option<HookStub> {
+fn add_task(task: state::Task) -> Option<HookStub> {
     task_ops::add_task(task)
 }
 
@@ -265,6 +268,6 @@ pub(super) fn request_refresh_async_full() {
     task_ops::request_refresh_async_full();
 }
 
-fn invoke_callbacks(events: Vec<super::refresh::CallbackEvent>) {
+fn invoke_callbacks(events: Vec<CallbackEvent>) {
     task_ops::invoke_callbacks(events);
 }

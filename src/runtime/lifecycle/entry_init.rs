@@ -1,9 +1,17 @@
 // 运行时初始化入口，负责信号处理器安装、CFI 禁用、monitor 线程启动
+#[cfg(target_arch = "aarch64")]
+use super::super::refresh;
+use super::super::state;
+use super::monitor_calls;
+#[cfg(target_arch = "aarch64")]
+use super::transaction;
 use crate::android::signal_guard;
 use crate::api::HookMode;
 use crate::errno::Errno;
 use crate::log;
 use crate::version;
+use std::ffi;
+use std::mem;
 
 use super::super::state::GLOBAL;
 use super::super::thread_state;
@@ -20,8 +28,8 @@ pub(super) fn get_version() -> String {
 // 与路径无关，覆盖 memfd 匿名加载（如 neozygisk）场景
 fn resolve_self_base_addr() -> usize {
     let _loader_call = fork::LoaderCall::enter();
-    let probe = resolve_self_base_addr as *const std::ffi::c_void;
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    let probe = resolve_self_base_addr as *const ffi::c_void;
+    let mut info: libc::Dl_info = unsafe { mem::zeroed() };
     if unsafe { libc::dladdr(probe, &mut info) } == 0 {
         return 0;
     }
@@ -56,18 +64,14 @@ pub(super) fn init(mode: HookMode, debug: bool) -> Errno {
     status
 }
 
-fn initialize_runtime(
-    runtime: &super::super::state::ProcessRuntime,
-    mode: HookMode,
-    debug: bool,
-) -> Errno {
+fn initialize_runtime(runtime: &state::ProcessRuntime, mode: HookMode, debug: bool) -> Errno {
     if let Err(error) = fork::register_handlers() {
         return error;
     }
     if !thread_state::init_thread_state_key() || !thread_state::init_current_thread_state() {
         return Errno::InitErrSafe;
     }
-    super::monitor_calls::prime_for_fork();
+    monitor_calls::prime_for_fork();
     signal_guard::prime_process_state();
     if let Err(error) = signal_guard::add_handler() {
         return error;
@@ -75,11 +79,11 @@ fn initialize_runtime(
     #[cfg(target_arch = "aarch64")]
     {
         let source = runtime.snapshot();
-        let prepared = match super::super::refresh::prepare_cfi_init(&source) {
+        let prepared = match refresh::prepare_cfi_init(&source) {
             Ok(prepared) => prepared,
             Err(error) => return error,
         };
-        let result = super::transaction::commit(runtime, &source, prepared);
+        let result = transaction::commit(runtime, &source, prepared);
         if result.status != Errno::Ok {
             return result.status;
         }

@@ -1,7 +1,10 @@
 // ELF 指针访问限定在 Bionic phdr 回调提供的模块租期内。
 use crate::errno::Errno;
+use crate::runtime;
 use std::collections::BTreeMap;
 use std::ffi::c_void;
+use std::mem;
+use std::slice;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct LoaderEpoch {
@@ -26,8 +29,7 @@ pub(super) fn with_loader_lease<R>(
         F: FnOnce(LoaderEpoch) -> Result<R, Errno>,
     {
         let context = unsafe { &mut *data.cast::<Context<F, R>>() };
-        let required =
-            std::mem::offset_of!(libc::dl_phdr_info, dlpi_subs) + std::mem::size_of::<u64>();
+        let required = mem::offset_of!(libc::dl_phdr_info, dlpi_subs) + mem::size_of::<u64>();
         if info.is_null() || size < required {
             context.result = Some(Err(Errno::ModuleLeaseUnavailable));
             return 1;
@@ -46,7 +48,7 @@ pub(super) fn with_loader_lease<R>(
     where
         F: FnOnce(LoaderEpoch) -> Result<R, Errno>,
     {
-        let _loader_call = crate::runtime::fork::LoaderCall::enter();
+        let _loader_call = runtime::fork::LoaderCall::enter();
         let mut context = Context {
             operation: Some(operation),
             result: None,
@@ -77,7 +79,7 @@ pub(super) fn bionic_module_ranges() -> BTreeMap<usize, Vec<(usize, usize)>> {
                 return 0;
             }
             let headers =
-                unsafe { std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
+                unsafe { slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
             let ranges = headers
                 .iter()
                 .filter(|header| header.p_type == libc::PT_LOAD)

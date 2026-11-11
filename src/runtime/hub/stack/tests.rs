@@ -1,15 +1,14 @@
 // Hub 调用栈的单元测试
+use super::super::ProxyNode;
 use super::{
     HubFrame, get_prev_func, pop_stack_by_return_address, proxy_leave, with_test_hub_stack,
 };
+use std::ffi;
+use std::ptr;
 use std::sync::atomic::AtomicBool;
 
-fn make_node(
-    func: usize,
-    enabled: bool,
-    next: *mut super::super::ProxyNode,
-) -> *mut super::super::ProxyNode {
-    Box::into_raw(Box::new(super::super::ProxyNode {
+fn make_node(func: usize, enabled: bool, next: *mut ProxyNode) -> *mut ProxyNode {
+    Box::into_raw(Box::new(ProxyNode {
         func,
         ref_count: 1,
         enabled: AtomicBool::new(enabled),
@@ -19,9 +18,9 @@ fn make_node(
 
 #[test]
 fn get_prev_func_searches_non_top_frame() {
-    let tail = make_node(0x2222, true, std::ptr::null_mut());
+    let tail = make_node(0x2222, true, ptr::null_mut());
     let head = make_node(0x1111, true, tail);
-    let other = make_node(0x3333, true, std::ptr::null_mut());
+    let other = make_node(0x3333, true, ptr::null_mut());
 
     with_test_hub_stack(|stack| {
         let _ = stack.clear();
@@ -43,7 +42,7 @@ fn get_prev_func_searches_non_top_frame() {
         }));
     });
 
-    let prev = get_prev_func(0x1111 as *mut std::ffi::c_void);
+    let prev = get_prev_func(0x1111 as *mut ffi::c_void);
     assert_eq!(prev as usize, 0x2222);
 
     with_test_hub_stack(|stack| {
@@ -78,7 +77,7 @@ fn pop_stack_by_return_address_removes_non_top_frame() {
         }));
     });
 
-    pop_stack_by_return_address(0x111 as *mut std::ffi::c_void);
+    pop_stack_by_return_address(0x111 as *mut ffi::c_void);
     with_test_hub_stack(|stack| {
         assert_eq!(stack.len(), 1);
         assert_eq!(stack.get(0).map(|frame| frame.hub_id), Some(2));
@@ -110,7 +109,7 @@ fn proxy_leave_removes_non_top_frame() {
         }));
     });
 
-    proxy_leave(0xaaaa as *mut std::ffi::c_void);
+    proxy_leave(0xaaaa as *mut ffi::c_void);
     with_test_hub_stack(|stack| {
         assert_eq!(stack.len(), 1);
         assert_eq!(stack.get(0).map(|frame| frame.first_proxy), Some(0xbbbb));

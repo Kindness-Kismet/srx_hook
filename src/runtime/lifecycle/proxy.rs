@@ -2,6 +2,7 @@
 use super::super::hub;
 use crate::runtime::thread_state;
 use crate::runtime::thread_state::ProxyFrame;
+use core::arch;
 use std::ffi::c_void;
 use std::ptr;
 
@@ -25,7 +26,7 @@ fn current_stack_pointer() -> usize {
     {
         let sp: usize;
         unsafe {
-            core::arch::asm!("mov {0}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
+            arch::asm!("mov {0}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
         }
         return sp;
     }
@@ -34,7 +35,7 @@ fn current_stack_pointer() -> usize {
     {
         let sp: usize;
         unsafe {
-            core::arch::asm!("mov {0}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
+            arch::asm!("mov {0}, rsp", out(reg) sp, options(nomem, nostack, preserves_flags));
         }
         return sp;
     }

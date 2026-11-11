@@ -1,14 +1,21 @@
 // loader 临界区只采集模块数据，用户过滤和新状态构造在租期之外进行。
+#[cfg(target_arch = "aarch64")]
+use crate::android;
 use crate::android::memory::MemoryProtections;
+use crate::api;
 use crate::api::HookStub;
 use crate::elf::Elf;
 use crate::errno::Errno;
+use crate::runtime;
 use crate::runtime::hub;
 use crate::runtime::rules::should_ignore;
 use crate::runtime::state::{
     CoreState, ModuleInfo, PendingProtection, SlotEntry, SlotKey, Task, TaskType,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem;
+#[cfg(target_arch = "aarch64")]
+use std::ptr;
 
 use super::lease::{self, LoaderEpoch};
 use super::matcher::{CalleeResolve, is_task_match_caller, resolve_callee_addrs};
@@ -168,11 +175,11 @@ fn capture_cfi_instructions(snapshot: &ModuleSnapshot) -> Result<Vec<Instruction
             .filter(|module| snapshot.ranges.contains_key(&module.base_addr))
             .cloned()
             .collect();
-        let addresses = crate::runtime::cfi::global_patch_addresses(&leased_modules)?;
+        let addresses = runtime::cfi::global_patch_addresses(&leased_modules)?;
         let protections = MemoryProtections::default();
         let mut instructions = Vec::new();
         for address in addresses {
-            let size = std::mem::size_of::<u32>();
+            let size = mem::size_of::<u32>();
             let end = address.checked_add(size).ok_or(Errno::ReadElf)?;
             if !address.is_multiple_of(size) {
                 return Err(Errno::ReadElf);
@@ -185,16 +192,16 @@ fn capture_cfi_instructions(snapshot: &ModuleSnapshot) -> Result<Vec<Instruction
                         .any(|(start, limit)| address >= *start && end <= *limit)
                 })
                 .ok_or(Errno::ModuleLeaseUnavailable)?;
-            let expected = crate::android::signal_guard::with_guard(|| unsafe {
-                std::ptr::read_volatile(address as *const u32)
+            let expected = android::signal_guard::with_guard(|| unsafe {
+                ptr::read_volatile(address as *const u32)
             })?;
-            if expected == crate::runtime::cfi::RET_INSTRUCTION {
+            if expected == runtime::cfi::RET_INSTRUCTION {
                 continue;
             }
             instructions.push(InstructionPatch {
                 address,
                 expected,
-                value: crate::runtime::cfi::RET_INSTRUCTION,
+                value: runtime::cfi::RET_INSTRUCTION,
                 protection: protections.get(address, size)?,
                 module_base: module.base_addr,
             });
@@ -427,7 +434,7 @@ fn capture_cfi(
     protections: &MemoryProtections,
     patches: &mut BTreeMap<usize, AuxiliaryPatch>,
 ) -> Result<(), Errno> {
-    let Some((slowpath, diagnostic)) = crate::runtime::cfi::module_proxy_addresses() else {
+    let Some((slowpath, diagnostic)) = runtime::cfi::module_proxy_addresses() else {
         return Ok(());
     };
     for (symbol, target) in [
@@ -440,7 +447,7 @@ fn capture_cfi(
             if expected == target {
                 continue;
             }
-            let protection = protections.get(address, std::mem::size_of::<usize>())?;
+            let protection = protections.get(address, mem::size_of::<usize>())?;
             patches.insert(
                 address,
                 AuxiliaryPatch {
@@ -464,12 +471,12 @@ fn observe_slot(
     validate_slot(key.slot_addr, ranges)?;
     Ok(ObservedSlot {
         value: ops::read_slot(key.slot_addr)?,
-        protection: protections.get(key.slot_addr, std::mem::size_of::<usize>())?,
+        protection: protections.get(key.slot_addr, mem::size_of::<usize>())?,
     })
 }
 
 fn validate_slot(address: usize, ranges: &[(usize, usize)]) -> Result<(), Errno> {
-    let size = std::mem::size_of::<usize>();
+    let size = mem::size_of::<usize>();
     let end = address.checked_add(size).ok_or(Errno::ReadElf)?;
     if !address.is_multiple_of(size)
         || !ranges
@@ -519,7 +526,7 @@ fn apply_capture(
         module,
         slots,
     } = captured;
-    if super::matcher::is_single_task_bound_to_other_module(state, &task, &module) {
+    if runtime::refresh::matcher::is_single_task_bound_to_other_module(state, &task, &module) {
         return;
     }
     let slots = match slots {
@@ -560,7 +567,7 @@ fn apply_capture(
             continue;
         }
         let previous = planned_first_function(original, &state.tasks, &key, slot);
-        if state.init.mode == crate::api::HookMode::Manual {
+        if state.init.mode == api::HookMode::Manual {
             emit_event(&task, &module, Errno::OrigAddr, previous, events);
         }
         slot.task_chain.push(task.stub);
@@ -582,7 +589,7 @@ fn planned_first_function(
     slot: &SlotEntry,
 ) -> usize {
     if slot.hub_ptr == 0 {
-        return super::transaction::chain_functions(tasks, &slot.task_chain)
+        return runtime::refresh::transaction::chain_functions(tasks, &slot.task_chain)
             .first()
             .copied()
             .unwrap_or(slot.orig_func);

@@ -3,9 +3,11 @@
 
 use crate::errno::Errno;
 use crate::log;
+use crate::runtime;
 use crate::runtime::PidLocal;
 use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_void};
+use std::mem;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -224,11 +226,11 @@ pub fn add_handler() -> Result<(), Errno> {
         return Ok(());
     }
 
-    crate::runtime::check_management()?;
+    runtime::check_management()?;
     if HANDLER_INSTALL_MODE.load(Ordering::Acquire) != HANDLER_MODE_NONE {
         return Ok(());
     }
-    let _initialization = crate::runtime::InitializationCall::enter();
+    let _initialization = runtime::InitializationCall::enter();
     prime_process_state();
     let _handler_lock = match handler_lock().try_lock() {
         Ok(guard) => guard,
@@ -274,17 +276,17 @@ fn install_sigaction(
         return Ok(());
     }
     unsafe {
-        let mut old: libc::sigaction = std::mem::zeroed();
+        let mut old: libc::sigaction = mem::zeroed();
         if abi::raw_sigaction(signal, ptr::null(), &mut old) != 0 {
             return Err(Errno::Unknown);
         }
         store_old_action(previous, old);
-        let mut action: libc::sigaction = std::mem::zeroed();
+        let mut action: libc::sigaction = mem::zeroed();
         action.sa_sigaction = handler;
         action.sa_flags =
             libc::SA_SIGINFO | libc::SA_ONSTACK | libc::SA_RESTART | SA_EXPOSE_TAGBITS;
         libc::sigfillset(&mut action.sa_mask);
-        let mut replaced = Box::new(std::mem::zeroed::<libc::sigaction>());
+        let mut replaced = Box::new(mem::zeroed::<libc::sigaction>());
         if abi::raw_sigaction(signal, &action, &mut *replaced) != 0 {
             return Err(Errno::Unknown);
         }

@@ -1,6 +1,7 @@
 // 按 PT_LOAD 的实际页映射识别同一 ELF 的文件首段别名。
 use std::collections::BTreeMap;
 use std::ffi::{CStr, c_void};
+use std::slice;
 
 use super::ModuleInfo;
 
@@ -99,8 +100,7 @@ unsafe extern "C" fn collect(
         },
     );
     if !info.dlpi_phdr.is_null() {
-        let headers =
-            unsafe { std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
+        let headers = unsafe { slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize) };
         snapshot.record_segments(base, headers);
     }
     0

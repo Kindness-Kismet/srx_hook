@@ -1,5 +1,11 @@
+use std::env;
+#[cfg(target_arch = "aarch64")]
+use std::ffi;
 use std::ffi::{CString, c_char, c_void};
 use std::fs;
+use std::mem;
+#[cfg(target_arch = "aarch64")]
+use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use srx_hook::{
@@ -35,7 +41,7 @@ pub unsafe extern "C" fn hook_puts_a_chain(s: *const c_char) -> i32 {
         if prev.is_null() {
             return 0;
         }
-        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
         unsafe { prev_fn(s) }
     })
     .unwrap_or(0)
@@ -48,7 +54,7 @@ pub unsafe extern "C" fn hook_puts_b_chain(s: *const c_char) -> i32 {
         if prev.is_null() {
             return 0;
         }
-        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
         unsafe { prev_fn(s) }
     })
     .unwrap_or(0)
@@ -61,7 +67,7 @@ pub unsafe extern "C" fn hook_puts_c_chain(s: *const c_char) -> i32 {
         if prev.is_null() {
             return 0;
         }
-        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
         unsafe { prev_fn(s) }
     })
     .unwrap_or(0)
@@ -82,7 +88,7 @@ pub unsafe extern "C" fn hook_puts_no_leave(s: *const c_char) -> i32 {
     if prev.is_null() {
         return 0;
     }
-    let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+    let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
     unsafe { prev_fn(s) }
 }
 
@@ -98,7 +104,7 @@ pub unsafe extern "C" fn hook_puts_return_address_stack(s: *const c_char) -> i32
     let result = if prev.is_null() {
         0
     } else {
-        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
         unsafe { prev_fn(s) }
     };
     pop_stack(return_address);
@@ -111,7 +117,7 @@ pub unsafe extern "C" fn hook_puts_cycle_guard(s: *const c_char) -> i32 {
     with_prev_func(self_ptr, |prev| {
         let mut result = 0;
         if !prev.is_null() {
-            let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+            let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
             result = unsafe { prev_fn(s) };
         }
         if !s.is_null() {
@@ -128,7 +134,7 @@ pub unsafe extern "C" fn hook_puts_cycle_manual_no_leave(s: *const c_char) -> i3
     let prev = get_prev_func(self_ptr);
     let mut result = 0;
     if !prev.is_null() {
-        let prev_fn: PutsFn = unsafe { std::mem::transmute(prev) };
+        let prev_fn: PutsFn = unsafe { mem::transmute(prev) };
         result = unsafe { prev_fn(s) };
     }
     if !s.is_null() {
@@ -143,7 +149,7 @@ pub unsafe extern "C" fn hook_strlen_cycle_guard(s: *const c_char) -> usize {
     with_prev_func(self_ptr, |prev| {
         let mut result = 0usize;
         if !prev.is_null() {
-            let prev_fn: StrlenFn = unsafe { std::mem::transmute(prev) };
+            let prev_fn: StrlenFn = unsafe { mem::transmute(prev) };
             result = unsafe { prev_fn(s) };
         }
         let msg = b"cycle-guard\n\0";
@@ -159,7 +165,7 @@ pub unsafe extern "C" fn hook_strlen_cycle_manual_no_leave(s: *const c_char) -> 
     let prev = get_prev_func(self_ptr);
     let mut result = 0usize;
     if !prev.is_null() {
-        let prev_fn: StrlenFn = unsafe { std::mem::transmute(prev) };
+        let prev_fn: StrlenFn = unsafe { mem::transmute(prev) };
         result = unsafe { prev_fn(s) };
     }
     let msg = b"cycle-manual\n\0";
@@ -200,7 +206,7 @@ pub fn current_rss_kb() -> usize {
 }
 
 pub fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
+    env::var(name)
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -208,7 +214,7 @@ pub fn env_usize(name: &str, default: usize) -> usize {
 }
 
 pub fn env_flag(name: &str) -> bool {
-    std::env::var(name)
+    env::var(name)
         .ok()
         .map(|value| {
             matches!(
@@ -228,9 +234,7 @@ impl ScopedEnv {
     pub fn set(name: &str, value: &str) -> Self {
         let name_c = CString::new(name).expect("scoped env name contains interior nul");
         let value_c = CString::new(value).expect("scoped env value contains interior nul");
-        let old_value = std::env::var(name)
-            .ok()
-            .and_then(|text| CString::new(text).ok());
+        let old_value = env::var(name).ok().and_then(|text| CString::new(text).ok());
 
         let set_ret = unsafe { libc::setenv(name_c.as_ptr(), value_c.as_ptr(), 1) };
         assert_eq!(set_ret, 0, "setenv failed for {name}");
@@ -268,7 +272,7 @@ fn android_api_level() -> i32 {
         return 0;
     }
 
-    let value = unsafe { std::ffi::CStr::from_ptr(prop_value.as_ptr()) };
+    let value = unsafe { ffi::CStr::from_ptr(prop_value.as_ptr()) };
     value
         .to_str()
         .ok()
@@ -289,13 +293,13 @@ pub unsafe fn verify_cfi_slowpath_disabled() {
         let slowpath_diag = libc::dlsym(handle, c"__cfi_slowpath_diag".as_ptr());
         assert!(!slowpath.is_null(), "verify cfi: __cfi_slowpath missing");
 
-        let slowpath_inst = std::ptr::read_volatile(slowpath as *const u32);
+        let slowpath_inst = ptr::read_volatile(slowpath as *const u32);
         assert_eq!(
             slowpath_inst, ARM64_RET_INST,
             "verify cfi: __cfi_slowpath not patched"
         );
         if !slowpath_diag.is_null() {
-            let slowpath_diag_inst = std::ptr::read_volatile(slowpath_diag as *const u32);
+            let slowpath_diag_inst = ptr::read_volatile(slowpath_diag as *const u32);
             assert_eq!(
                 slowpath_diag_inst, ARM64_RET_INST,
                 "verify cfi: __cfi_slowpath_diag not patched"
@@ -312,7 +316,7 @@ pub unsafe fn resolve_symbol_module_base(symbol_name: &str) -> Option<usize> {
         return None;
     }
 
-    let mut info: libc::Dl_info = std::mem::zeroed();
+    let mut info: libc::Dl_info = mem::zeroed();
     if libc::dladdr(symbol_addr as *const c_void, &mut info) == 0 || info.dli_fbase.is_null() {
         return None;
     }
@@ -365,7 +369,7 @@ pub unsafe fn module_base_from_handle(handle: *mut c_void) -> Option<usize> {
     if sym.is_null() {
         return None;
     }
-    let mut info: libc::Dl_info = std::mem::zeroed();
+    let mut info: libc::Dl_info = mem::zeroed();
     if libc::dladdr(sym as *const c_void, &mut info) == 0 || info.dli_fbase.is_null() {
         return None;
     }
@@ -412,7 +416,7 @@ pub unsafe fn hook_test_trigger(handle: *mut c_void) {
     let sym_name = CString::new("hook_test_trigger").expect("cstring failed");
     let sym = libc::dlsym(handle, sym_name.as_ptr());
     assert!(!sym.is_null(), "dlsym hook_test_trigger failed");
-    let trigger: unsafe extern "C" fn() = std::mem::transmute(sym);
+    let trigger: unsafe extern "C" fn() = mem::transmute(sym);
     trigger();
 }
 
@@ -420,6 +424,6 @@ pub unsafe fn hook_test_trigger_with_input(handle: *mut c_void, msg: &CString) {
     let sym_name = CString::new("hook_test_trigger_with_input").expect("cstring failed");
     let sym = libc::dlsym(handle, sym_name.as_ptr());
     assert!(!sym.is_null(), "dlsym hook_test_trigger_with_input failed");
-    let trigger: unsafe extern "C" fn(*const c_char) = std::mem::transmute(sym);
+    let trigger: unsafe extern "C" fn(*const c_char) = mem::transmute(sym);
     trigger(msg.as_ptr());
 }

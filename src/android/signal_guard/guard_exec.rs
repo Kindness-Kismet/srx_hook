@@ -1,7 +1,9 @@
 // 信号守卫先准备线程资源，再用叶子调用保护内存访问。
+use super::is_enabled;
 use crate::errno::Errno;
 use crate::log;
 use std::marker::PhantomData;
+use std::mem;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
@@ -40,7 +42,7 @@ impl Drop for PreparedGuard {
 
 // 在发布锁外解析 ABI、分配备用栈并保留 slot。
 pub fn prepare() -> Result<PreparedGuard, Errno> {
-    let slot = if super::is_enabled() {
+    let slot = if is_enabled() {
         abi::prime();
         altstack::ensure_thread_altstack()?;
         let slot = slot::acquire_slot(abi::current_thread_id()).ok_or(Errno::SegvErr)?;
@@ -78,7 +80,7 @@ struct SignalMaskGuard {
 
 impl SignalMaskGuard {
     fn block() -> Result<Self, Errno> {
-        let mut prev_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+        let mut prev_mask: libc::sigset_t = unsafe { mem::zeroed() };
         abi::block_guard_signals(&mut prev_mask)?;
         Ok(Self {
             prev_mask,

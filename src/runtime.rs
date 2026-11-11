@@ -1,4 +1,5 @@
 // runtime 模块入口，将内部子模块的功能统一暴露为 crate 级公共接口
+use crate::api;
 use crate::api::{
     CallerAllowFilter, HookBatchError, HookMode, HookRequest, HookStub, HookedCallback,
     ModuleIdentity, PostDlopenCallback, PreDlopenCallback,
@@ -67,7 +68,7 @@ pub(crate) fn hook_single_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     lifecycle::hook_single_checked(
         caller_path_name,
         callee_path_name,
@@ -108,7 +109,7 @@ pub(crate) fn hook_partial_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     lifecycle::hook_partial_checked(
         caller_allow_filter,
         caller_allow_filter_arg,
@@ -144,7 +145,7 @@ pub(crate) fn hook_all_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     lifecycle::hook_all_checked(callee_path_name, sym_name, new_func, hooked, hooked_arg)
 }
 
@@ -167,7 +168,7 @@ pub(crate) fn get_module_identity_with_symbol(
     lifecycle::get_module_identity_with_symbol(handle, probe_symbol)
 }
 
-pub(crate) fn refresh() -> (Errno, Vec<crate::api::RefreshError>) {
+pub(crate) fn refresh() -> (Errno, Vec<api::RefreshError>) {
     lifecycle::refresh()
 }
 
@@ -175,7 +176,7 @@ pub(crate) fn clear() {
     lifecycle::clear();
 }
 
-pub(crate) fn clear_checked() -> Result<crate::api::ClearReport, crate::api::ClearError> {
+pub(crate) fn clear_checked() -> Result<api::ClearReport, api::ClearError> {
     lifecycle::clear_checked()
 }
 
@@ -260,6 +261,7 @@ pub(crate) fn del_dlopen_callback(
 
 #[cfg(test)]
 mod tests {
+    use super::unhook;
     use super::{
         clear, hook_single, init, proxy_enter, proxy_leave,
         rules::{module_match, path_match},
@@ -268,6 +270,7 @@ mod tests {
     use crate::api::HookMode;
     use crate::errno::Errno;
     use std::ffi::c_void;
+    use std::ptr;
 
     #[test]
     fn absolute_path_must_be_equal() {
@@ -349,7 +352,7 @@ mod tests {
             "puts",
             dummy_proxy as *mut c_void,
             None,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         );
         assert!(first.is_some());
 
@@ -359,12 +362,12 @@ mod tests {
             "puts",
             dummy_proxy as *mut c_void,
             None,
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         );
         assert!(second.is_some());
         assert_ne!(first, second);
-        assert_eq!(super::unhook(first.expect("first stub")), Errno::Ok);
-        assert_eq!(super::unhook(second.expect("second stub")), Errno::Ok);
+        assert_eq!(unhook(first.expect("first stub")), Errno::Ok);
+        assert_eq!(unhook(second.expect("second stub")), Errno::Ok);
         clear();
     }
 }

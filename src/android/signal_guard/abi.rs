@@ -1,9 +1,13 @@
 // 信号相关系统调用的底层封装
 // 动态解析 libc 中的 sigaction/sigprocmask 符号，兼容不同 Android 版本
 
+use super::published_functions;
 use crate::errno::Errno;
 use crate::log;
+use crate::runtime;
 use std::ffi::{CStr, c_void};
+use std::io;
+use std::mem;
 use std::ptr;
 use std::sync::atomic::AtomicPtr;
 
@@ -34,7 +38,7 @@ const SIGPROCMASK_SYMBOLS: [&CStr; 4] = [
 
 fn signal_abi_fns() -> &'static SignalAbiFns {
     static ABI_FNS: AtomicPtr<SignalAbiFns> = AtomicPtr::new(ptr::null_mut());
-    super::published_functions(&ABI_FNS, resolve_signal_abi_fns)
+    published_functions(&ABI_FNS, resolve_signal_abi_fns)
 }
 
 pub(super) fn prime() {
@@ -87,7 +91,7 @@ fn fill_signal_abi_from_library(
 // 多策略解析信号 ABI 函数指针
 // 查找顺序: RTLD_DEFAULT -> 已加载的 libc -> dlopen libc -> RTLD_NEXT
 fn resolve_signal_abi_fns() -> SignalAbiFns {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = runtime::LoaderCall::enter();
     let mut sigaction_ptr: *mut c_void = ptr::null_mut();
     let mut sigprocmask_ptr: *mut c_void = ptr::null_mut();
 
@@ -130,18 +134,18 @@ fn resolve_signal_abi_fns() -> SignalAbiFns {
         sigaction_fn: if sigaction_ptr.is_null() {
             libc::sigaction
         } else {
-            unsafe { std::mem::transmute::<*mut c_void, SigActionFn>(sigaction_ptr) }
+            unsafe { mem::transmute::<*mut c_void, SigActionFn>(sigaction_ptr) }
         },
         sigprocmask_fn: if sigprocmask_ptr.is_null() {
             libc::sigprocmask
         } else {
-            unsafe { std::mem::transmute::<*mut c_void, SigProcMaskFn>(sigprocmask_ptr) }
+            unsafe { mem::transmute::<*mut c_void, SigProcMaskFn>(sigprocmask_ptr) }
         },
     }
 }
 
 fn last_errno() -> libc::c_int {
-    std::io::Error::last_os_error()
+    io::Error::last_os_error()
         .raw_os_error()
         .unwrap_or_default() as libc::c_int
 }
@@ -200,7 +204,7 @@ pub(super) unsafe fn raw_sigaction(
                 signum as libc::c_long,
                 new_action,
                 old_action,
-                std::mem::size_of::<libc::sigset_t>(),
+                mem::size_of::<libc::sigset_t>(),
             )
         })
     };
@@ -227,7 +231,7 @@ pub(super) unsafe fn raw_sigprocmask(
                 how as libc::c_long,
                 new_set,
                 old_set,
-                std::mem::size_of::<libc::sigset_t>(),
+                mem::size_of::<libc::sigset_t>(),
             )
         })
     };
@@ -236,7 +240,7 @@ pub(super) unsafe fn raw_sigprocmask(
 
 // 临时屏蔽 SIGSEGV 和 SIGBUS，返回之前的信号掩码
 pub(super) fn block_guard_signals(prev_mask: &mut libc::sigset_t) -> Result<(), Errno> {
-    let mut block_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut block_mask: libc::sigset_t = unsafe { mem::zeroed() };
     unsafe {
         libc::sigemptyset(&mut block_mask);
         libc::sigaddset(&mut block_mask, libc::SIGSEGV);
@@ -258,7 +262,7 @@ pub(super) fn restore_guard_signals(prev_mask: &libc::sigset_t) {
 pub(super) fn sigset_or(dest: &mut libc::sigset_t, left: &libc::sigset_t, right: &libc::sigset_t) {
     unsafe {
         libc::sigemptyset(dest);
-        let sigset_bits = (std::mem::size_of::<libc::sigset_t>() * 8) as libc::c_int;
+        let sigset_bits = (mem::size_of::<libc::sigset_t>() * 8) as libc::c_int;
         for signum in 1..sigset_bits {
             if libc::sigismember(left, signum) == 1 || libc::sigismember(right, signum) == 1 {
                 libc::sigaddset(dest, signum);
@@ -269,7 +273,7 @@ pub(super) fn sigset_or(dest: &mut libc::sigset_t, left: &libc::sigset_t, right:
 
 // 从 ucontext 中提取信号掩码，x86_64 使用 uc_sigmask64 字段
 pub(super) fn read_ucontext_sigmask(ucontext: *mut libc::c_void) -> libc::sigset_t {
-    let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut mask: libc::sigset_t = unsafe { mem::zeroed() };
     unsafe {
         libc::sigemptyset(&mut mask);
     }
@@ -281,10 +285,10 @@ pub(super) fn read_ucontext_sigmask(ucontext: *mut libc::c_void) -> libc::sigset
     {
         let context = unsafe { &*(ucontext as *const libc::ucontext_t) };
         let copy_len =
-            std::mem::size_of::<libc::sigset_t>().min(std::mem::size_of_val(&context.uc_sigmask64));
+            mem::size_of::<libc::sigset_t>().min(mem::size_of_val(&context.uc_sigmask64));
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                std::ptr::addr_of!(context.uc_sigmask64) as *const u8,
+            ptr::copy_nonoverlapping(
+                ptr::addr_of!(context.uc_sigmask64) as *const u8,
                 (&mut mask as *mut libc::sigset_t).cast::<u8>(),
                 copy_len,
             );
@@ -294,7 +298,7 @@ pub(super) fn read_ucontext_sigmask(ucontext: *mut libc::c_void) -> libc::sigset
     #[cfg(not(target_arch = "x86_64"))]
     {
         let context = unsafe { &*(ucontext as *const libc::ucontext_t) };
-        mask = unsafe { std::ptr::read(std::ptr::addr_of!(context.uc_sigmask)) };
+        mask = unsafe { ptr::read(ptr::addr_of!(context.uc_sigmask)) };
     }
 
     mask

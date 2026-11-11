@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::ptr;
 use std::sync::atomic::Ordering;
 
 use srx_hook::{HookMode, add_ignore, clear, hook_single, init, refresh, unhook};
@@ -27,7 +28,7 @@ pub unsafe fn scenario_single_hook_unhook() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single A failed");
     ensure_ok(refresh().0, "refresh single");
@@ -58,7 +59,7 @@ pub unsafe fn scenario_multi_hook_chain_unhook() {
         "puts",
         hook_puts_a_chain as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single A failed");
     let stub_b = hook_single(
@@ -67,7 +68,7 @@ pub unsafe fn scenario_multi_hook_chain_unhook() {
         "puts",
         hook_puts_b_chain as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single B failed");
     let stub_c = hook_single(
@@ -76,7 +77,7 @@ pub unsafe fn scenario_multi_hook_chain_unhook() {
         "puts",
         hook_puts_c_chain as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single C failed");
     ensure_ok(refresh().0, "refresh chain");
@@ -154,7 +155,7 @@ pub unsafe fn scenario_same_proxy_multi_stub_unhook() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single same proxy A failed");
     let stub_b = hook_single(
@@ -163,7 +164,7 @@ pub unsafe fn scenario_same_proxy_multi_stub_unhook() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single same proxy B failed");
     ensure_ok(refresh().0, "refresh same proxy");
@@ -205,7 +206,7 @@ pub unsafe fn scenario_missing_leave_recovery() {
         "puts",
         hook_puts_no_leave as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single missing leave failed");
     ensure_ok(refresh().0, "refresh missing leave");
@@ -237,7 +238,7 @@ pub unsafe fn scenario_ignore() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single ignore case failed");
     ensure_ok(refresh().0, "refresh ignore");

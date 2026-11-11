@@ -1,3 +1,5 @@
+use crate::log;
+use crate::runtime;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -207,7 +209,7 @@ fn should_log_every_step(count: u64) -> bool {
 }
 
 fn is_fork_child_text() -> &'static str {
-    if crate::runtime::state::is_forked_child() {
+    if runtime::state::is_forked_child() {
         "是"
     } else {
         "否"
@@ -217,7 +219,7 @@ fn is_fork_child_text() -> &'static str {
 fn report_thread_state_key_init_fail(phase: &str, ret: i32) {
     let count = THREAD_STATE_KEY_INIT_FAIL.fetch_add(1, Ordering::Relaxed) + 1;
     if should_log_every_step(count) {
-        crate::log::warn(format_args!(
+        log::warn(format_args!(
             "线程状态 key 初始化失败: phase={} ret={} 次数={} fork_child={}",
             phase,
             ret,
@@ -277,7 +279,7 @@ fn is_thread_state_reserved(keys: ThreadStateKeys) -> bool {
 fn report_thread_state_reserved() {
     let count = THREAD_STATE_RESERVED_HIT.fetch_add(1, Ordering::Relaxed) + 1;
     if should_log_every_step(count) {
-        crate::log::warn(format_args!(
+        log::warn(format_args!(
             "线程状态析构保护命中: 次数={} fork_child={}",
             count,
             is_fork_child_text()
@@ -304,7 +306,7 @@ fn get_or_init_thread_state_ptr(keys: ThreadStateKeys) -> Option<ThreadStatePtr>
         }
         let count = THREAD_STATE_BIND_FAIL.fetch_add(1, Ordering::Relaxed) + 1;
         if should_log_every_step(count) {
-            crate::log::warn(format_args!(
+            log::warn(format_args!(
                 "线程状态绑定失败: ret={} 次数={} fork_child={}",
                 ret,
                 count,
@@ -346,7 +348,7 @@ where
 pub(crate) fn report_thread_state_unavailable(site: &str) {
     let count = THREAD_STATE_ACCESS_FAIL.fetch_add(1, Ordering::Relaxed) + 1;
     if should_log_every_step(count) {
-        crate::log::warn(format_args!(
+        log::warn(format_args!(
             "线程状态尚未建立: site={} 次数={} fork_child={}",
             site,
             count,
@@ -359,7 +361,7 @@ pub(crate) fn report_thread_state_unavailable(site: &str) {
 pub(crate) fn report_hub_stack_overflow() {
     let count = HUB_STACK_OVERFLOW.fetch_add(1, Ordering::Relaxed) + 1;
     if should_log_every_step(count) {
-        crate::log::warn(format_args!(
+        log::warn(format_args!(
             "Hub 固定栈溢出: cap={} 次数={} fork_child={}",
             HUB_STACK_CAP,
             count,
@@ -372,7 +374,7 @@ pub(crate) fn report_hub_stack_overflow() {
 pub(crate) fn report_proxy_stack_overflow() {
     let count = PROXY_STACK_OVERFLOW.fetch_add(1, Ordering::Relaxed) + 1;
     if should_log_every_step(count) {
-        crate::log::warn(format_args!(
+        log::warn(format_args!(
             "Proxy 固定栈溢出: cap={} 次数={} fork_child={}",
             PROXY_STACK_CAP,
             count,

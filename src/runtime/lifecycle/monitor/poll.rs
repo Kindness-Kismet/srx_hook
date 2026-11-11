@@ -1,5 +1,6 @@
 // monitor 线程轮询循环，结合事件驱动与周期性轮询两种刷新策略
 use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
@@ -112,7 +113,7 @@ fn is_owner(runtime: &ProcessRuntime, epoch: usize) -> bool {
             .monitor_thread
             .lock_or_poison()
             .as_ref()
-            .is_some_and(|handle| handle.thread().id() == std::thread::current().id())
+            .is_some_and(|handle| handle.thread().id() == thread::current().id())
 }
 
 pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
@@ -122,12 +123,12 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
         if is_owner(runtime, epoch) {
             break;
         }
-        std::thread::park_timeout(event_interval);
+        thread::park_timeout(event_interval);
     }
     while is_owner(runtime, epoch) {
         match fork::check_management() {
             Ok(()) => break,
-            Err(Errno::Busy) => std::thread::park_timeout(event_interval),
+            Err(Errno::Busy) => thread::park_timeout(event_interval),
             Err(_) => return,
         }
     }
@@ -138,7 +139,7 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
     let mut last_refresh = Instant::now();
     while is_owner(runtime, epoch) {
         if fork::check_management() == Err(Errno::Busy) {
-            std::thread::park_timeout(event_interval);
+            thread::park_timeout(event_interval);
             continue;
         }
         install_auto_loader_monitor_hooks();
@@ -154,7 +155,7 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
         let periodic_refresh =
             periodic_enabled && last_refresh.elapsed() >= fallback_poll.timeout();
         if !event_refresh && !periodic_refresh {
-            std::thread::park_timeout(event_interval);
+            thread::park_timeout(event_interval);
             continue;
         }
         let mut module_changed = false;
@@ -171,7 +172,7 @@ pub(super) fn monitor_loop(runtime: &'static ProcessRuntime, epoch: usize) {
         }
         if status == Errno::Busy {
             runtime.refresh_requested.store(true, Ordering::Release);
-            std::thread::park_timeout(event_interval);
+            thread::park_timeout(event_interval);
             continue;
         }
         if matches!(status, Errno::Uninit | Errno::ForkContextUnavailable) {

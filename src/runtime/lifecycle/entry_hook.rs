@@ -1,4 +1,7 @@
 // hook 操作入口，提供 hook_single/hook_partial/hook_all/unhook 等 API 的实现
+use super::super::record;
+use super::task_ops;
+use crate::api;
 use crate::api::{
     CallerAllowFilter, HookMode, HookStub, HookedCallback, ModuleIdentity, RefreshError,
 };
@@ -38,7 +41,7 @@ pub(super) fn hook_single_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     fork::check_management()?;
     if caller_path_name.is_empty() || sym_name.is_empty() || new_func.is_null() {
         return Err(Errno::InvalidArg.into());
@@ -56,7 +59,7 @@ pub(super) fn hook_single_checked(
             arg: hooked_arg as usize,
         }),
     };
-    super::task_ops::add_task_checked(task)
+    task_ops::add_task_checked(task)
 }
 
 pub(super) fn hook_partial(
@@ -89,7 +92,7 @@ pub(super) fn hook_partial_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     fork::check_management()?;
     if sym_name.is_empty() || new_func.is_null() {
         return Err(Errno::InvalidArg.into());
@@ -110,7 +113,7 @@ pub(super) fn hook_partial_checked(
             arg: hooked_arg as usize,
         }),
     };
-    super::task_ops::add_task_checked(task)
+    task_ops::add_task_checked(task)
 }
 
 pub(super) fn hook_all(
@@ -131,7 +134,7 @@ pub(super) fn hook_all_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, api::HookError> {
     fork::check_management()?;
     if sym_name.is_empty() || new_func.is_null() {
         return Err(Errno::InvalidArg.into());
@@ -149,7 +152,7 @@ pub(super) fn hook_all_checked(
             arg: hooked_arg as usize,
         }),
     };
-    super::task_ops::add_task_checked(task)
+    task_ops::add_task_checked(task)
 }
 
 pub(super) fn unhook(stub: HookStub) -> Errno {
@@ -163,11 +166,7 @@ pub(super) fn unhook(stub: HookStub) -> Errno {
     let runtime = &*GLOBAL;
     let result = transaction::run(runtime, false, |state| {
         let mut prepared = refresh::prepare_unhook(state, stub)?;
-        super::super::record::add_unhook_record(
-            &mut prepared.draft,
-            prepared.status.as_i32(),
-            stub,
-        );
+        record::add_unhook_record(&mut prepared.draft, prepared.status.as_i32(), stub);
         Ok(prepared)
     });
     invoke_callbacks(result.events);

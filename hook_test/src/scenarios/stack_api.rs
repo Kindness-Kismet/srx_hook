@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::ptr;
 use std::sync::atomic::Ordering;
 
 use srx_hook::{HookMode, clear, hook_single, init, pop_stack, refresh, unhook};
@@ -18,7 +19,7 @@ pub unsafe fn scenario_return_address_stack_api() {
         "puts",
         hook_puts_return_address_stack as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single stack api failed");
     ensure_ok(refresh().0, "refresh stack api");
@@ -30,7 +31,7 @@ pub unsafe fn scenario_return_address_stack_api() {
     let count = STACK_API_COUNT.load(Ordering::Relaxed);
     assert!(count >= 16, "stack api hook lost calls: {count}");
 
-    pop_stack(std::ptr::null_mut());
+    pop_stack(ptr::null_mut());
     ensure_ok(unhook(stub), "unhook stack api");
     libc::dlclose(handle);
     clear();

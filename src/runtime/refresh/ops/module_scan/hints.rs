@@ -1,4 +1,6 @@
 // 模块身份 hint 缓存，提供 base_addr / instance_id / pathname / noload 四级 namespace 解析
+use super::noload;
+use super::resolve;
 use crate::runtime::state::{MutexPoisonRecover, PidLocal};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -251,7 +253,7 @@ pub(super) fn apply_instance_hints(
         .unwrap()
         .retain(|path, _| alive_paths.contains(path));
 
-    let dlinfo = super::resolve::resolve_dlinfo_fn();
+    let dlinfo = resolve::resolve_dlinfo_fn();
     let instance_namespaces = observed_instance_namespace_hints().lock_or_poison().clone();
     for (module, from_phdr) in modules {
         let Some(identity) = hints.get(&module.base_addr).copied() else {
@@ -269,7 +271,7 @@ pub(super) fn apply_instance_hints(
             if module.namespace_id == 0
                 && let Some(dlinfo) = dlinfo
                 && let Some(namespace_id) =
-                    super::noload::resolve_namespace_id_from_noload_cached(module, dlinfo)
+                    noload::resolve_namespace_id_from_noload_cached(module, dlinfo)
             {
                 module.namespace_id = namespace_id;
             }
@@ -295,7 +297,7 @@ pub(super) fn apply_instance_hints(
         if module.namespace_id == 0
             && let Some(dlinfo) = dlinfo
             && let Some(namespace_id) =
-                super::noload::resolve_namespace_id_from_noload_cached(module, dlinfo)
+                noload::resolve_namespace_id_from_noload_cached(module, dlinfo)
         {
             module.namespace_id = namespace_id;
         }

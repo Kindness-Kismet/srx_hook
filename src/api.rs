@@ -211,7 +211,7 @@ pub fn hook_single_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, HookError> {
     runtime::check_management()?;
     if in_external_callback() {
         return Err(Errno::InitErrSafe.into());
@@ -257,7 +257,7 @@ pub fn hook_partial_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, HookError> {
     runtime::check_management()?;
     if in_external_callback() {
         return Err(Errno::InitErrSafe.into());
@@ -292,7 +292,7 @@ pub fn hook_all_checked(
     new_func: *mut c_void,
     hooked: Option<HookedCallback>,
     hooked_arg: *mut c_void,
-) -> Result<HookStub, crate::api::HookError> {
+) -> Result<HookStub, HookError> {
     runtime::check_management()?;
     if in_external_callback() {
         return Err(Errno::InitErrSafe.into());

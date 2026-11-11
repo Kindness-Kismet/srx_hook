@@ -1,5 +1,7 @@
 use std::ffi::c_void;
+use std::ptr;
 use std::sync::atomic::Ordering;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use srx_hook::{
@@ -23,12 +25,12 @@ pub unsafe fn scenario_automatic_refresh() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single automatic failed");
 
     let handle = load_hook_test();
-    std::thread::sleep(Duration::from_millis(1200));
+    thread::sleep(Duration::from_millis(1200));
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(handle);
     assert!(
@@ -51,7 +53,7 @@ pub unsafe fn scenario_records_and_dlopen_callbacks() {
         add_dlopen_callback(
             Some(hook_test_dlopen_pre),
             Some(hook_test_dlopen_post),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         ),
         "add_dlopen_callback",
     );
@@ -62,7 +64,7 @@ pub unsafe fn scenario_records_and_dlopen_callbacks() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single records failed");
 
@@ -70,7 +72,7 @@ pub unsafe fn scenario_records_and_dlopen_callbacks() {
     DLOPEN_POST_COUNT.store(0, Ordering::Relaxed);
 
     let handle = load_hook_test();
-    std::thread::sleep(Duration::from_millis(1200));
+    thread::sleep(Duration::from_millis(1200));
     assert!(
         DLOPEN_PRE_COUNT.load(Ordering::Relaxed) >= 1,
         "dlopen pre callback not fired"
@@ -90,7 +92,7 @@ pub unsafe fn scenario_records_and_dlopen_callbacks() {
         del_dlopen_callback(
             Some(hook_test_dlopen_pre),
             Some(hook_test_dlopen_post),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         ),
         "del_dlopen_callback",
     );
@@ -109,12 +111,12 @@ pub unsafe fn scenario_auto_reload_stability() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single auto reload failed");
 
     let first = load_hook_test();
-    std::thread::sleep(Duration::from_millis(1200));
+    thread::sleep(Duration::from_millis(1200));
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(first);
     assert!(
@@ -123,9 +125,9 @@ pub unsafe fn scenario_auto_reload_stability() {
     );
     libc::dlclose(first);
 
-    std::thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(300));
     let second = load_hook_test();
-    std::thread::sleep(Duration::from_millis(1200));
+    thread::sleep(Duration::from_millis(1200));
     HOOK_A_COUNT.store(0, Ordering::Relaxed);
     hook_test_trigger(second);
     assert!(
@@ -151,7 +153,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_fallback() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single auto reload periodic forced failed");
 
@@ -161,7 +163,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_fallback() {
         let handle = load_hook_test();
         let mut hit = false;
         for _ in 0..6 {
-            std::thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(100));
             HOOK_A_COUNT.store(0, Ordering::Relaxed);
             hook_test_trigger(handle);
             if HOOK_A_COUNT.load(Ordering::Relaxed) > 0 {
@@ -171,7 +173,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_fallback() {
         }
         assert!(hit, "forced periodic fallback hook miss at round={round}");
         libc::dlclose(handle);
-        std::thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(40));
     }
     let rss_after = current_rss_kb();
     let delta = rss_after.saturating_sub(rss_before);
@@ -200,7 +202,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_disabled() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single auto reload periodic disabled failed");
 
@@ -209,7 +211,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_disabled() {
         let handle = load_hook_test();
         let mut hit = false;
         for _ in 0..6 {
-            std::thread::sleep(Duration::from_millis(80));
+            thread::sleep(Duration::from_millis(80));
             HOOK_A_COUNT.store(0, Ordering::Relaxed);
             hook_test_trigger(handle);
             if HOOK_A_COUNT.load(Ordering::Relaxed) > 0 {
@@ -219,7 +221,7 @@ pub unsafe fn scenario_auto_reload_forced_periodic_disabled() {
         }
         assert!(hit, "forced periodic disabled hook miss at round={round}");
         libc::dlclose(handle);
-        std::thread::sleep(Duration::from_millis(30));
+        thread::sleep(Duration::from_millis(30));
     }
     clear();
 }
@@ -235,7 +237,7 @@ pub unsafe fn scenario_auto_reload_long_stress() {
         add_dlopen_callback(
             Some(hook_test_dlopen_pre),
             Some(hook_test_dlopen_post),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         ),
         "add_dlopen_callback long stress",
     );
@@ -248,7 +250,7 @@ pub unsafe fn scenario_auto_reload_long_stress() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single auto reload long stress failed");
 
@@ -258,7 +260,7 @@ pub unsafe fn scenario_auto_reload_long_stress() {
         let handle = load_hook_test();
         let mut hit = 0usize;
         for _ in 0..5 {
-            std::thread::sleep(Duration::from_millis(80));
+            thread::sleep(Duration::from_millis(80));
             HOOK_A_COUNT.store(0, Ordering::Relaxed);
             hook_test_trigger(handle);
             hit = HOOK_A_COUNT.load(Ordering::Relaxed);
@@ -273,7 +275,7 @@ pub unsafe fn scenario_auto_reload_long_stress() {
             DLOPEN_POST_COUNT.load(Ordering::Relaxed),
         );
         libc::dlclose(handle);
-        std::thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(40));
     }
 
     let rss_after = current_rss_kb();
@@ -301,7 +303,7 @@ pub unsafe fn scenario_auto_reload_long_stress() {
         del_dlopen_callback(
             Some(hook_test_dlopen_pre),
             Some(hook_test_dlopen_post),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         ),
         "del_dlopen_callback long stress",
     );
@@ -317,7 +319,7 @@ pub unsafe fn scenario_auto_reload_marathon() {
         add_dlopen_callback(
             Some(hook_test_dlopen_pre),
             Some(hook_test_dlopen_post),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         ),
         "add_dlopen_callback auto marathon",
     );
@@ -331,7 +333,7 @@ pub unsafe fn scenario_auto_reload_marathon() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single auto reload marathon failed");
 
@@ -343,7 +345,7 @@ pub unsafe fn scenario_auto_reload_marathon() {
         let handle = load_hook_test();
         let mut hit = false;
         for _ in 0..6 {
-            std::thread::sleep(Duration::from_millis(40));
+            thread::sleep(Duration::from_millis(40));
             let count_before = HOOK_A_COUNT.load(Ordering::Relaxed);
             hook_test_trigger(handle);
             let count_after = HOOK_A_COUNT.load(Ordering::Relaxed);
@@ -396,7 +398,7 @@ pub unsafe fn scenario_auto_reload_marathon() {
         del_dlopen_callback(
             Some(hook_test_dlopen_pre),
             Some(hook_test_dlopen_post),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
         ),
         "del_dlopen_callback auto marathon",
     );

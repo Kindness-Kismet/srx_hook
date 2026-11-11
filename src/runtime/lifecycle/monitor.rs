@@ -1,8 +1,10 @@
 // dlopen/dlclose 监控模块，自动检测动态库加载卸载并触发 hook 刷新
 // 支持 loader hook (API >= 26) 和 legacy hook 两种策略，可自动降级
+use super::task_ops;
 use crate::api::HookMode;
 use crate::errno::Errno;
 use crate::log;
+use crate::runtime;
 use std::env;
 use std::ffi::c_void;
 use std::ffi::{CStr, c_char};
@@ -372,11 +374,11 @@ fn ensure_monitor_task(task: Task, installation: &Installation) -> bool {
     }) {
         return true;
     }
-    super::task_ops::add_monitor_task(task, installation).is_some()
+    task_ops::add_monitor_task(task, installation).is_some()
 }
 
 fn should_use_loader_hooks() -> bool {
-    let _loader_call = crate::runtime::LoaderCall::enter();
+    let _loader_call = runtime::LoaderCall::enter();
     let api_level = android_api_level();
     if api_level < ANDROID_API_LEVEL_LOADER {
         return false;

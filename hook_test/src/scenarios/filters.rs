@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::ptr;
 use std::sync::atomic::Ordering;
 
 use srx_hook::{
@@ -23,7 +24,7 @@ pub unsafe fn scenario_callee_filter() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single wrong callee failed");
     ensure_ok(refresh().0, "refresh callee wrong");
@@ -43,7 +44,7 @@ pub unsafe fn scenario_callee_filter() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single right callee failed");
     ensure_ok(refresh().0, "refresh callee right");
@@ -71,7 +72,7 @@ pub unsafe fn scenario_callee_filter_lazy_bind() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single lazy callee failed");
     ensure_ok(refresh().0, "refresh callee lazy");
@@ -104,7 +105,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single wrong caller base failed");
     ensure_ok(refresh().0, "refresh wrong caller base");
@@ -125,7 +126,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single right caller base failed");
     ensure_ok(refresh().0, "refresh right caller base");
@@ -145,7 +146,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single wrong callee base failed");
     ensure_ok(refresh().0, "refresh wrong callee base");
@@ -166,7 +167,7 @@ pub unsafe fn scenario_base_qualified_path_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single right callee base failed");
     ensure_ok(refresh().0, "refresh right callee base");
@@ -204,7 +205,7 @@ pub unsafe fn scenario_single_same_basename_multi_instance() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single same basename failed");
     ensure_ok(refresh().0, "refresh single same basename");
@@ -273,7 +274,7 @@ pub unsafe fn scenario_instance_qualified_path_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single wrong instance rule failed");
     ensure_ok(refresh().0, "refresh wrong instance rule");
@@ -295,7 +296,7 @@ pub unsafe fn scenario_instance_qualified_path_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single right instance rule failed");
     ensure_ok(refresh().0, "refresh right instance rule");
@@ -345,7 +346,7 @@ pub unsafe fn scenario_ignore_instance_qualified_rule() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_all ignore instance-qualified rule failed");
     ensure_ok(refresh().0, "refresh ignore instance-qualified rule");
@@ -401,7 +402,7 @@ pub unsafe fn scenario_instance_rule_from_handle_api() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single instance rule from handle api failed");
     ensure_ok(refresh().0, "refresh instance rule from handle api");
@@ -459,7 +460,7 @@ pub unsafe fn scenario_identity_with_symbol_api() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single identity with symbol api failed");
     ensure_ok(refresh().0, "refresh identity with symbol api");
@@ -537,7 +538,7 @@ pub unsafe fn scenario_namespace_rule_from_handle_api() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single wrong namespace rule failed");
     ensure_ok(refresh().0, "refresh wrong namespace rule");
@@ -565,7 +566,7 @@ pub unsafe fn scenario_namespace_rule_from_handle_api() {
         "puts",
         hook_puts_quiet as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single right namespace rule failed");
     ensure_ok(refresh().0, "refresh right namespace rule");

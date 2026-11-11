@@ -1,4 +1,5 @@
 // GOT slot 读写、ELF 解析和模块扫描的底层操作，所有操作均在信号保护下执行
+use super::lease;
 use crate::android::signal_guard;
 use crate::elf;
 use crate::errno::Errno;
@@ -49,7 +50,7 @@ pub(super) fn observe_module_identity(module: &ModuleInfo) {
 }
 
 pub(super) fn module_identity_from_handle(handle: *mut c_void) -> Option<ModuleInfo> {
-    super::lease::with_loader_lease(|_| Ok(module_scan::module_identity_from_handle(handle)))
+    lease::with_loader_lease(|_| Ok(module_scan::module_identity_from_handle(handle)))
         .ok()
         .flatten()
 }
@@ -58,7 +59,7 @@ pub(super) fn module_identity_from_handle_with_symbol(
     handle: *mut c_void,
     probe_symbol: &str,
 ) -> Option<ModuleInfo> {
-    super::lease::with_loader_lease(|_| {
+    lease::with_loader_lease(|_| {
         Ok(module_scan::module_identity_from_handle_with_symbol(
             handle,
             probe_symbol,

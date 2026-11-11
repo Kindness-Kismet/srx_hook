@@ -1,3 +1,5 @@
+use std::mem;
+use std::ptr;
 use std::sync::Arc;
 
 use crate::api::RefreshError;
@@ -69,9 +71,9 @@ pub(super) fn commit(
     prepared.draft.revision = source.revision.wrapping_add(1);
     let mut failure_draft = prepared.failure_draft(source);
     failure_draft.revision = prepared.draft.revision;
-    let mut next = Some(Arc::new(std::mem::take(&mut prepared.draft)));
+    let mut next = Some(Arc::new(mem::take(&mut prepared.draft)));
     let mut failure = Some(Arc::new(failure_draft));
-    let mut old = std::ptr::null();
+    let mut old = ptr::null();
     let mut status = prepared.status;
     let mut callback_entered = false;
     let mut retryable = false;

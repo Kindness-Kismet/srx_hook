@@ -1,9 +1,14 @@
 // 解析、分配与过滤在发布 gate 外完成；提交只操作预备页面和原子指针。
+use crate::android;
 use crate::api::HookStub;
 use crate::errno::Errno;
+use crate::log;
+use crate::runtime;
 use crate::runtime::hub::{self, PreparedChain};
 use crate::runtime::state::{CoreState, ModuleInfo, PendingProtection, RefreshCoverage, SlotKey};
 use std::collections::BTreeMap;
+use std::iter;
+use std::mem;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use super::lease::{self, LoaderEpoch};
@@ -71,7 +76,7 @@ pub(in crate::runtime) struct PreparedRefresh {
     pages: Vec<PreparedPage>,
     chains: Vec<PreparedChain>,
     unpublished: UnpublishedHubs,
-    guard: crate::android::signal_guard::PreparedGuard,
+    guard: android::signal_guard::PreparedGuard,
 }
 
 impl PreparedRefresh {
@@ -99,7 +104,7 @@ impl PreparedRefresh {
                 pid: unsafe { libc::getpid() },
                 hubs: Vec::new(),
             },
-            guard: crate::android::signal_guard::prepare()?,
+            guard: android::signal_guard::prepare()?,
         })
     }
 
@@ -346,9 +351,9 @@ impl PreparedRefresh {
         for instruction in &self.instructions {
             unsafe { &*(instruction.address as *const AtomicU32) }
                 .store(instruction.value, Ordering::SeqCst);
-            crate::android::memory::flush_instruction_cache_range(
+            android::memory::flush_instruction_cache_range(
                 instruction.address,
-                instruction.address + std::mem::size_of::<u32>(),
+                instruction.address + mem::size_of::<u32>(),
             );
         }
         self.committed = true;
@@ -375,7 +380,7 @@ impl PreparedRefresh {
             .map(|page| &page.pending)
             .filter(|page| page.needs_restore)
         {
-            crate::log::error(format_args!(
+            log::error(format_args!(
                 "page protection restore failed module={} page=0x{:x} protection={}",
                 page.module.pathname, page.address, page.protection,
             ));
@@ -392,7 +397,7 @@ impl PreparedRefresh {
 }
 
 pub(super) fn chain_functions(
-    tasks: &BTreeMap<HookStub, crate::runtime::state::Task>,
+    tasks: &BTreeMap<HookStub, runtime::state::Task>,
     stubs: &[HookStub],
 ) -> Vec<usize> {
     let mut counts = BTreeMap::<usize, usize>::new();
@@ -410,7 +415,7 @@ pub(super) fn chain_functions(
     order
         .into_iter()
         .rev()
-        .flat_map(|function| std::iter::repeat_n(function, counts[&function]))
+        .flat_map(|function| iter::repeat_n(function, counts[&function]))
         .collect()
 }
 

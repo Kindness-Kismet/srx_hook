@@ -1,4 +1,6 @@
+use std::mem;
 use std::ops::Deref;
+use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -53,7 +55,7 @@ impl ProcessRuntime {
     }
 
     pub(in crate::runtime) fn is_current(&self) -> bool {
-        self.pid == unsafe { libc::getpid() } && std::ptr::eq(CURRENT.load(Ordering::Acquire), self)
+        self.pid == unsafe { libc::getpid() } && ptr::eq(CURRENT.load(Ordering::Acquire), self)
     }
 
     // 调用方已取得发布权；这里只比较版本并交换完整快照。
@@ -91,7 +93,7 @@ impl ProcessRuntime {
         if self.readers.load(Ordering::SeqCst) != 0 {
             return;
         }
-        let ready = std::mem::take(&mut *retired);
+        let ready = mem::take(&mut *retired);
         drop(retired);
         drop(ready);
     }
@@ -145,7 +147,7 @@ impl ProcessRuntime {
     }
 }
 
-static CURRENT: AtomicPtr<ProcessRuntime> = AtomicPtr::new(std::ptr::null_mut());
+static CURRENT: AtomicPtr<ProcessRuntime> = AtomicPtr::new(ptr::null_mut());
 
 pub(in crate::runtime) struct GlobalRuntime;
 pub(in crate::runtime) static GLOBAL: GlobalRuntime = GlobalRuntime;

@@ -1,4 +1,5 @@
 use std::ffi::{CString, c_void};
+use std::ptr;
 use std::sync::atomic::Ordering;
 
 use srx_hook::{HookMode, clear, hook_single, init, refresh, unhook};
@@ -20,7 +21,7 @@ pub unsafe fn scenario_cycle_guard_auto() {
         "puts",
         hook_puts_cycle_guard as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single puts cycle failed");
     let stub_strlen = hook_single(
@@ -29,7 +30,7 @@ pub unsafe fn scenario_cycle_guard_auto() {
         "strlen",
         hook_strlen_cycle_guard as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single strlen cycle failed");
     ensure_ok(refresh().0, "refresh cycle guard");
@@ -64,7 +65,7 @@ pub unsafe fn scenario_cycle_guard_manual_no_leave() {
         "puts",
         hook_puts_cycle_manual_no_leave as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single puts cycle manual failed");
     let stub_strlen = hook_single(
@@ -73,7 +74,7 @@ pub unsafe fn scenario_cycle_guard_manual_no_leave() {
         "strlen",
         hook_strlen_cycle_manual_no_leave as *mut c_void,
         None,
-        std::ptr::null_mut(),
+        ptr::null_mut(),
     )
     .expect("hook_single strlen cycle manual failed");
     ensure_ok(refresh().0, "refresh cycle manual");

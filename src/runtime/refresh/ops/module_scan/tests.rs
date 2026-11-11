@@ -8,6 +8,7 @@ use super::resolve::resolve_namespace_id_from_link_map;
 use super::{LinkMap, ObservedIdentityHint, merge_module_identity};
 use crate::runtime::state::ModuleInfo;
 use std::collections::BTreeMap;
+use std::ptr;
 
 #[test]
 fn parse_maps_so_ok() {
@@ -113,47 +114,47 @@ fn resolve_namespace_id_by_instance_hint() {
 fn namespace_id_from_link_map_head() {
     let mut head = LinkMap {
         l_addr: 0,
-        l_name: std::ptr::null(),
-        l_ld: std::ptr::null_mut(),
-        l_next: std::ptr::null_mut(),
-        l_prev: std::ptr::null_mut(),
+        l_name: ptr::null(),
+        l_ld: ptr::null_mut(),
+        l_next: ptr::null_mut(),
+        l_prev: ptr::null_mut(),
     };
     let mut middle = LinkMap {
         l_addr: 0,
-        l_name: std::ptr::null(),
-        l_ld: std::ptr::null_mut(),
-        l_next: std::ptr::null_mut(),
-        l_prev: std::ptr::null_mut(),
+        l_name: ptr::null(),
+        l_ld: ptr::null_mut(),
+        l_next: ptr::null_mut(),
+        l_prev: ptr::null_mut(),
     };
     let mut tail = LinkMap {
         l_addr: 0,
-        l_name: std::ptr::null(),
-        l_ld: std::ptr::null_mut(),
-        l_next: std::ptr::null_mut(),
-        l_prev: std::ptr::null_mut(),
+        l_name: ptr::null(),
+        l_ld: ptr::null_mut(),
+        l_next: ptr::null_mut(),
+        l_prev: ptr::null_mut(),
     };
 
-    head.l_next = std::ptr::addr_of_mut!(middle);
-    middle.l_prev = std::ptr::addr_of_mut!(head);
-    middle.l_next = std::ptr::addr_of_mut!(tail);
-    tail.l_prev = std::ptr::addr_of_mut!(middle);
+    head.l_next = ptr::addr_of_mut!(middle);
+    middle.l_prev = ptr::addr_of_mut!(head);
+    middle.l_next = ptr::addr_of_mut!(tail);
+    tail.l_prev = ptr::addr_of_mut!(middle);
 
-    let namespace = resolve_namespace_id_from_link_map(std::ptr::addr_of_mut!(tail))
+    let namespace = resolve_namespace_id_from_link_map(ptr::addr_of_mut!(tail))
         .expect("namespace should resolve");
-    assert_eq!(namespace, std::ptr::addr_of!(head) as usize);
+    assert_eq!(namespace, ptr::addr_of!(head) as usize);
 }
 
 #[test]
 fn namespace_id_from_link_map_cycle_returns_none() {
     let mut node = LinkMap {
         l_addr: 0,
-        l_name: std::ptr::null(),
-        l_ld: std::ptr::null_mut(),
-        l_next: std::ptr::null_mut(),
-        l_prev: std::ptr::null_mut(),
+        l_name: ptr::null(),
+        l_ld: ptr::null_mut(),
+        l_next: ptr::null_mut(),
+        l_prev: ptr::null_mut(),
     };
-    node.l_prev = std::ptr::addr_of_mut!(node);
-    assert!(resolve_namespace_id_from_link_map(std::ptr::addr_of_mut!(node)).is_none());
+    node.l_prev = ptr::addr_of_mut!(node);
+    assert!(resolve_namespace_id_from_link_map(ptr::addr_of_mut!(node)).is_none());
 }
 
 #[test]

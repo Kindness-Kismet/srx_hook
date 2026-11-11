@@ -1,5 +1,9 @@
 // 线程级 Hub 调用栈，追踪 trampoline 的嵌套调用关系
 // 用于 get_prev_func 链式调用和 return address 恢复
+use super::Hub;
+use super::ProxyNode;
+use super::acquire_chain;
+use super::release_chain;
 use crate::runtime::thread_state;
 use std::ffi::c_void;
 use std::ptr;
@@ -41,7 +45,7 @@ pub(super) struct Dispatch {
 
 // 入口回调：记录原生返回帧并选取 proxy，同一 Hub 递归时回落原函数。
 pub(super) unsafe extern "C" fn hub_push_stack(
-    hub_ptr: *mut super::Hub,
+    hub_ptr: *mut Hub,
     return_addr: *mut c_void,
     caller_sp: usize,
     return_target: usize,
@@ -57,7 +61,7 @@ pub(super) unsafe extern "C" fn hub_push_stack(
     let hub_id = hub_ptr as usize;
     dispatch.target = hub.orig_addr;
     thread_state::after_fork_child();
-    let chain = super::acquire_chain(hub);
+    let chain = acquire_chain(hub);
     if !thread_state::trampoline_enter(
         hub_id,
         return_addr as usize,
@@ -65,7 +69,7 @@ pub(super) unsafe extern "C" fn hub_push_stack(
         return_target,
         chain as usize,
     ) {
-        super::release_chain(chain as usize);
+        release_chain(chain as usize);
         return dispatch;
     }
     dispatch.return_to = return_target;
@@ -150,7 +154,7 @@ pub(super) fn pop_stack_by_return_address(return_addr: *mut c_void) {
 }
 
 // trampoline 出口回调：proxy 函数返回后弹出对应栈帧
-pub(super) extern "C" fn hub_pop_stack(hub_ptr: *mut super::Hub, caller_sp: usize) -> usize {
+pub(super) extern "C" fn hub_pop_stack(hub_ptr: *mut Hub, caller_sp: usize) -> usize {
     if hub_ptr.is_null() {
         return 0;
     }
@@ -187,7 +191,7 @@ pub(super) fn get_prev_func(func: *mut c_void) -> *mut c_void {
                 continue;
             };
             let mut found = false;
-            let mut cursor = frame.head_ptr as *mut super::ProxyNode;
+            let mut cursor = frame.head_ptr as *mut ProxyNode;
             while !cursor.is_null() {
                 let node = unsafe { &*cursor };
                 if !found {

@@ -1,4 +1,5 @@
 use std::ffi::c_char;
+use std::ptr;
 
 static mut XT_LEN_SINK: usize = 0;
 
@@ -18,7 +19,7 @@ pub extern "C" fn hook_test_trigger_with_input(msg: *const c_char) {
     }
     unsafe {
         let len = libc::strlen(msg);
-        std::ptr::write_volatile(std::ptr::addr_of_mut!(XT_LEN_SINK), len);
+        ptr::write_volatile(ptr::addr_of_mut!(XT_LEN_SINK), len);
         let _ = libc::puts(msg);
     }
 }

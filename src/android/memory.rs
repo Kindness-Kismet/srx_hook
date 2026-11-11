@@ -2,8 +2,13 @@
 
 use crate::errno::Errno;
 use crate::log;
+#[cfg(target_arch = "aarch64")]
+use core::arch;
 use std::cell::OnceCell;
 use std::fs;
+use std::io;
+use std::mem;
+use std::str;
 use std::sync::atomic::{Ordering, fence};
 
 pub const PROT_READ_FLAG: u32 = 0x1;
@@ -64,7 +69,7 @@ fn parse_protection_range(line: &[u8]) -> Option<ProtectionRange> {
     let mut fields = line
         .split(u8::is_ascii_whitespace)
         .filter(|field| !field.is_empty());
-    let (start, end) = std::str::from_utf8(fields.next()?).ok()?.split_once('-')?;
+    let (start, end) = str::from_utf8(fields.next()?).ok()?.split_once('-')?;
     let permissions = fields.next()?;
     if permissions.len() < 4 || permissions[3] != b'p' {
         return None;
@@ -93,7 +98,7 @@ pub fn get_mem_protect(addr: usize, len: usize, _pathname: Option<&str>) -> Resu
 
 // 查询单个指针大小地址的保护属性
 pub fn get_addr_protect(addr: usize, pathname: Option<&str>) -> Result<u32, Errno> {
-    get_mem_protect(addr, std::mem::size_of::<usize>(), pathname)
+    get_mem_protect(addr, mem::size_of::<usize>(), pathname)
 }
 
 // 修改指定地址所在页面的保护属性
@@ -101,7 +106,7 @@ pub fn set_addr_protect(addr: usize, prot: u32) -> Result<(), Errno> {
     let (start, len) = page_bounds(addr);
     let result = unsafe { libc::mprotect(start as *mut libc::c_void, len, prot as i32) };
     if result != 0 {
-        let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        let err = io::Error::last_os_error().raw_os_error().unwrap_or(0);
         log::error(format_args!("mprotect failed: {err}"));
         return Err(Errno::Unknown);
     }
@@ -135,24 +140,24 @@ fn flush_instruction_cache_impl(start: usize, end: usize) {
         let mut dcache_addr = align_down(start, dcache_line);
         while dcache_addr < end {
             unsafe {
-                core::arch::asm!("dc cvau, {}", in(reg) dcache_addr, options(nostack, preserves_flags));
+                arch::asm!("dc cvau, {}", in(reg) dcache_addr, options(nostack, preserves_flags));
             }
             dcache_addr = dcache_addr.saturating_add(dcache_line);
         }
         unsafe {
-            core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+            arch::asm!("dsb ish", options(nostack, preserves_flags));
         }
 
         let mut icache_addr = align_down(start, icache_line);
         while icache_addr < end {
             unsafe {
-                core::arch::asm!("ic ivau, {}", in(reg) icache_addr, options(nostack, preserves_flags));
+                arch::asm!("ic ivau, {}", in(reg) icache_addr, options(nostack, preserves_flags));
             }
             icache_addr = icache_addr.saturating_add(icache_line);
         }
         unsafe {
-            core::arch::asm!("dsb ish", options(nostack, preserves_flags));
-            core::arch::asm!("isb", options(nostack, preserves_flags));
+            arch::asm!("dsb ish", options(nostack, preserves_flags));
+            arch::asm!("isb", options(nostack, preserves_flags));
         }
     }
 
@@ -177,11 +182,11 @@ fn page_size() -> usize {
 fn page_bounds(addr: usize) -> (usize, usize) {
     let page_size = page_size();
     if page_size == 0 {
-        return (addr, std::mem::size_of::<usize>());
+        return (addr, mem::size_of::<usize>());
     }
     let page_mask = !(page_size - 1);
     let start = addr & page_mask;
-    let end = (addr + std::mem::size_of::<usize>() - 1) & page_mask;
+    let end = (addr + mem::size_of::<usize>() - 1) & page_mask;
     let end = end + page_size;
     (start, end - start)
 }
@@ -191,7 +196,7 @@ fn page_bounds(addr: usize) -> (usize, usize) {
 fn cache_line_size() -> (usize, usize) {
     let ctr_el0: usize;
     unsafe {
-        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0, options(nomem, nostack, preserves_flags));
+        arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0, options(nomem, nostack, preserves_flags));
     }
 
     let dcache_line = 4usize << ((ctr_el0 >> 16) & 0x0f);

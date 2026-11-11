@@ -6,6 +6,7 @@ use crate::log;
 use crate::runtime::state::ModuleInfo;
 use std::collections::BTreeSet;
 use std::ffi::CStr;
+use std::ptr;
 
 use super::RTLD_NEXT_FALLBACK;
 mod patch;
@@ -134,7 +135,7 @@ fn collect_module_symbol_addrs_from_import_slots(
             let slots = elf.find_got_slots(symbol, None).ok()?;
             let mut values = Vec::with_capacity(slots.len());
             for slot in slots {
-                let value = std::ptr::read(slot as *const usize);
+                let value = ptr::read(slot as *const usize);
                 if value != 0 {
                     values.push(value);
                 }

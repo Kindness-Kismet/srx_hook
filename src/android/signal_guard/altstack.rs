@@ -5,6 +5,7 @@ use crate::errno::Errno;
 use crate::log;
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::mem;
 use std::ptr;
 
 use super::{SIGALTSTACK_MIN_SIZE, abi};
@@ -41,7 +42,7 @@ impl ThreadAltStackState {
             return Ok(());
         }
 
-        let mut current: libc::stack_t = unsafe { std::mem::zeroed() };
+        let mut current: libc::stack_t = unsafe { mem::zeroed() };
         if unsafe { libc::sigaltstack(ptr::null(), &mut current) } != 0 {
             return Err(Errno::InitErrSig);
         }
@@ -58,7 +59,7 @@ impl ThreadAltStackState {
             return Err(Errno::NoMem);
         }
 
-        let mut stack: libc::stack_t = unsafe { std::mem::zeroed() };
+        let mut stack: libc::stack_t = unsafe { mem::zeroed() };
         stack.ss_sp = stack_mem;
         stack.ss_flags = 0;
         stack.ss_size = stack_size;

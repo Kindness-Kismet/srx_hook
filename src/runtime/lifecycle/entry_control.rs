@@ -1,9 +1,12 @@
 // 运行时控制入口，提供 clear/debug/record/proxy 等控制操作的实现
+use super::super::record;
+use super::transaction;
 use crate::android::signal_guard;
 use crate::api::{
     ClearError, ClearReport, HookMode, PostDlopenCallback, PreDlopenCallback, RefreshError,
 };
 use crate::errno::Errno;
+use crate::log;
 use std::ffi::{c_char, c_void};
 use std::sync::TryLockError;
 use std::sync::atomic::Ordering;
@@ -18,7 +21,7 @@ use super::proxy;
 // 兼容入口仍保留明确失败信息，调用方需要结果时使用 clear_checked。
 pub(super) fn clear() {
     if let Err(error) = clear_checked() {
-        crate::log::warn(format_args!(
+        log::warn(format_args!(
             "clear failed status={:?} revision={} removed={} remaining={} protections={} errors={}",
             error.status,
             error.report.revision,
@@ -55,7 +58,7 @@ pub(super) fn clear_checked() -> Result<ClearReport, ClearError> {
     {
         Vec::new()
     } else {
-        let result = super::transaction::run(runtime, true, refresh::prepare_clear);
+        let result = transaction::run(runtime, true, refresh::prepare_clear);
         if result.status != Errno::Ok {
             return Err(clear_error(runtime, before, result.status, result.errors));
         }
@@ -169,9 +172,9 @@ pub(super) fn set_debug(debug: bool) {
         Errno::Ok
     });
     if status == Errno::Ok {
-        crate::log::set_debug_enabled(debug);
+        log::set_debug_enabled(debug);
     } else if fork::check_management().is_ok() {
-        crate::log::warn(format_args!("set_debug failed status={status:?}"));
+        log::warn(format_args!("set_debug failed status={status:?}"));
     }
 }
 
@@ -192,13 +195,13 @@ pub(super) fn set_recordable(recordable: bool) {
         Errno::Ok
     });
     if status != Errno::Ok && fork::check_management().is_ok() {
-        crate::log::warn(format_args!("set_recordable failed status={status:?}"));
+        log::warn(format_args!("set_recordable failed status={status:?}"));
     }
 }
 
 pub(super) fn get_records(item_flags: u32) -> Option<String> {
     let state = GLOBAL.snapshot();
-    super::super::record::get_records_text(&state, item_flags)
+    record::get_records_text(&state, item_flags)
 }
 
 pub(super) fn dump_records(fd: i32, item_flags: u32) -> Errno {
@@ -207,12 +210,12 @@ pub(super) fn dump_records(fd: i32, item_flags: u32) -> Errno {
     }
     let text = {
         let state = GLOBAL.snapshot();
-        super::super::record::get_records_text(&state, item_flags)
+        record::get_records_text(&state, item_flags)
     };
     let Some(text) = text else {
         return Errno::Ok;
     };
-    match super::super::record::dump_records_text(fd, &text) {
+    match record::dump_records_text(fd, &text) {
         Ok(()) => Errno::Ok,
         Err(err) => err,
     }

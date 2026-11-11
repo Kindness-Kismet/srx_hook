@@ -1,6 +1,8 @@
 // 已发布的入口保持稳定，代理链独立发布并按物理调用帧回收。
 use crate::errno::Errno;
 use crate::runtime::state::{MutexPoisonRecover, PidLocal};
+use std::ffi;
+use std::iter;
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
@@ -273,7 +275,7 @@ fn current_proxies(hub: &Hub) -> Vec<usize> {
         let mut cursor = unsafe { (*chain).head };
         while !cursor.is_null() {
             let node = unsafe { &*cursor };
-            proxies.extend(std::iter::repeat_n(node.func, node.ref_count));
+            proxies.extend(iter::repeat_n(node.func, node.ref_count));
             cursor = node.next;
         }
         release_chain(chain as usize);
@@ -332,19 +334,19 @@ pub(super) fn first_enabled(hub_ptr: *mut Hub) -> usize {
     first
 }
 
-pub(super) fn get_prev_func(func: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
+pub(super) fn get_prev_func(func: *mut ffi::c_void) -> *mut ffi::c_void {
     stack::get_prev_func(func)
 }
 
-pub(super) fn get_return_address() -> *mut std::ffi::c_void {
+pub(super) fn get_return_address() -> *mut ffi::c_void {
     stack::get_return_address()
 }
 
-pub(super) fn pop_stack(return_address: *mut std::ffi::c_void) {
+pub(super) fn pop_stack(return_address: *mut ffi::c_void) {
     stack::pop_stack_by_return_address(return_address)
 }
 
-pub(super) fn proxy_leave(func: *mut std::ffi::c_void) {
+pub(super) fn proxy_leave(func: *mut ffi::c_void) {
     stack::proxy_leave(func)
 }
 
